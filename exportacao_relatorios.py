@@ -35,12 +35,118 @@ except ImportError:
 # FUNÇÕES DE INTERFACE (STREAMLIT)
 # ============================================
 
+def filtrar_por_periodo(df, data_inicio=None, data_fim=None, coluna_data='data_oc'):
+    """Filtra dataframe por período (inclusive) usando uma coluna de data."""
+    if df is None or df.empty:
+        return df
+    if coluna_data not in df.columns:
+        return df
+
+    s = pd.to_datetime(df[coluna_data], errors='coerce')
+    out = df.copy()
+    out['_dt_filter'] = s
+
+    if data_inicio is not None:
+        di = pd.to_datetime(data_inicio)
+        out = out[out['_dt_filter'] >= di]
+    if data_fim is not None:
+        dfim = pd.to_datetime(data_fim) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        out = out[out['_dt_filter'] <= dfim]
+
+    return out.drop(columns=['_dt_filter'])
+
+def ui_filtro_periodo(
+    df,
+    colunas_data=('data_oc', 'data_solicitacao', 'previsao_entrega'),
+    nomes_colunas=None,
+    label='Período'
+):
+    """Componente Streamlit para filtro de período com seletor de coluna de data.
+
+    Retorna: (df_filtrado, texto_subtitulo, coluna_escolhida)
+    - colunas_data: tupla/lista de colunas candidatas (usa as que existirem no df)
+    - nomes_colunas: dict opcional {coluna: nome_legivel}
+    """
+    if df is None or df.empty:
+        return df, "", None
+
+    if nomes_colunas is None:
+        nomes_colunas = {
+            'data_oc': 'Data OC',
+            'data_solicitacao': 'Data Solicitação',
+            'previsao_entrega': 'Previsão de Entrega',
+        }
+
+    # Mantém apenas colunas existentes
+    colunas_existentes = [c for c in colunas_data if c in df.columns]
+    if not colunas_existentes:
+        return df, "", None
+
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+    with col1:
+        usar = st.checkbox(f"Filtrar por {label}", value=False, key=f"filtro_{label}")
+
+    with col2:
+        # Seletor de coluna de data
+        opcoes = [nomes_colunas.get(c, c) for c in colunas_existentes]
+        # default: primeira opção
+        escolhido_idx = 0
+        nome_escolhido = st.selectbox("Base de data", opcoes, index=escolhido_idx, disabled=not usar, key=f"col_{label}")
+        # map back to coluna
+        coluna_escolhida = colunas_existentes[opcoes.index(nome_escolhido)]
+
+    # Preparar min/max para inputs
+    s = pd.to_datetime(df[coluna_escolhida], errors='coerce').dropna() if 'coluna_escolhida' in locals() else pd.Series([], dtype='datetime64[ns]')
+    if s.empty:
+        return df, "", coluna_escolhida if 'coluna_escolhida' in locals() else None
+
+    min_d = s.min().date()
+    max_d = s.max().date()
+
+    with col3:
+        d_ini = st.date_input("Data inicial", value=min_d, min_value=min_d, max_value=max_d, disabled=not usar, key=f"ini_{label}")
+    with col4:
+        d_fim = st.date_input("Data final", value=max_d, min_value=min_d, max_value=max_d, disabled=not usar, key=f"fim_{label}")
+
+    if usar:
+        df_f = filtrar_por_periodo(df, d_ini, d_fim, coluna_data=coluna_escolhida)
+        subt = f"{nomes_colunas.get(coluna_escolhida, coluna_escolhida)}: {d_ini.strftime('%d/%m/%Y')} a {d_fim.strftime('%d/%m/%Y')}"
+        return df_f, f"Período: {subt}", coluna_escolhida
+
+    return df, "", coluna_escolhida
+
+    s = pd.to_datetime(df[coluna_data], errors='coerce').dropna()
+    if s.empty:
+        return df, ""
+
+    min_d = s.min().date()
+    max_d = s.max().date()
+
+    col1, col2, col3 = st.columns([2, 2, 2])
+    with col1:
+        usar = st.checkbox(f"Filtrar por {label}", value=False, key=f"filtro_{label}_{coluna_data}")
+    with col2:
+        d_ini = st.date_input("Data inicial", value=min_d, min_value=min_d, max_value=max_d, disabled=not usar, key=f"ini_{label}_{coluna_data}")
+    with col3:
+        d_fim = st.date_input("Data final", value=max_d, min_value=min_d, max_value=max_d, disabled=not usar, key=f"fim_{label}_{coluna_data}")
+
+    if usar:
+        df_f = filtrar_por_periodo(df, d_ini, d_fim, coluna_data=coluna_data)
+        subt = f"Período: {d_ini.strftime('%d/%m/%Y')} a {d_fim.strftime('%d/%m/%Y')}"
+        return df_f, subt
+
+    return df, ""
+
+
 def gerar_botoes_exportacao(df_pedidos, formatar_moeda_br):
     """Gera botões de exportação em múltiplos formatos"""
     
     st.markdown("### 📄 Exportar Relatório Completo")
     st.info("📊 Exporte todos os pedidos em formatos profissionais")
     
+
+    # Filtro de período (opcional)
+    df_pedidos, subtitulo_periodo, _ = ui_filtro_periodo(df_pedidos, coluna_data="data_oc", label="Período")
     col1, col2, col3 = st.columns(3)
     
     df_export = preparar_dados_exportacao(df_pedidos)
@@ -111,6 +217,9 @@ def criar_relatorio_executivo(df_pedidos, formatar_moeda_br):
     
     st.markdown("### 📊 Relatório Executivo Premium")
     
+
+    # Filtro de período (opcional)
+    df_pedidos, subtitulo_periodo, _ = ui_filtro_periodo(df_pedidos, coluna_data="data_oc", label="Período")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -171,6 +280,9 @@ def gerar_relatorio_fornecedor(df_pedidos, fornecedor, formatar_moeda_br):
     
     df_forn = df_pedidos[df_pedidos['fornecedor_nome'] == fornecedor]
     
+
+    # Filtro de período (opcional)
+    df_forn, subtitulo_periodo, _ = ui_filtro_periodo(df_forn, coluna_data='data_oc', label='Período')
     if df_forn.empty:
         st.warning("Nenhum pedido encontrado")
         return
@@ -222,6 +334,9 @@ def gerar_relatorio_departamento(df_pedidos, departamento, formatar_moeda_br):
     
     df_dept = df_pedidos[df_pedidos['departamento'] == departamento]
     
+
+    # Filtro de período (opcional)
+    df_dept, subtitulo_periodo, _ = ui_filtro_periodo(df_dept, coluna_data='data_oc', label='Período')
     if df_dept.empty:
         st.warning("Nenhum pedido encontrado")
         return
@@ -490,6 +605,68 @@ def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
     t.setStyle(TableStyle(estilo))
     return t
 
+
+
+def _build_table_from_rows(header, rows, col_widths, atraso_mask=None):
+    """Cria a tabela (com repeatRows) a partir de header + rows já preparados."""
+    df_pdf = pd.DataFrame(rows, columns=header)
+    return _tabela_detalhamento(df_pdf, col_widths, atraso_mask=atraso_mask)
+
+def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, heading_flowables=None, min_last_rows=2):
+    """Paginação inteligente baseada em altura real (evita páginas com 1 linha 'perdida')."""
+    if heading_flowables is None:
+        heading_flowables = []
+
+    used_h = 0
+    for fl in heading_flowables:
+        try:
+            _, h = fl.wrap(doc.width, doc.height)
+            used_h += h
+        except Exception:
+            if hasattr(fl, 'height'):
+                used_h += float(fl.height)
+
+    avail_h = max(1, doc.height - used_h - 0.2 * cm)
+    avail_w = doc.width
+
+    pages = []
+    i = 0
+    n = len(rows)
+
+    while i < n:
+        lo, hi = 1, n - i
+        best = 1
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            sub = rows[i:i+mid]
+            t = _build_table_from_rows(header, sub, col_widths,
+                                       atraso_mask=None if atraso_mask is None else atraso_mask[i:i+mid])
+            _, h = t.wrap(avail_w, avail_h)
+            if h <= avail_h:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        if best < 1:
+            best = 1
+
+        pages.append((i, best))
+        i += best
+
+    # Ajuste final: evita última página com poucas linhas
+    if len(pages) >= 2:
+        start_last, len_last = pages[-1]
+        if len_last < min_last_rows:
+            start_prev, len_prev = pages[-2]
+            move = min(min_last_rows - len_last, max(0, len_prev - min_last_rows))
+            if move > 0:
+                pages[-2] = (start_prev, len_prev - move)
+                pages[-1] = (start_last - move, len_last + move)
+
+    return pages
+
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
     """PDF Premium - Relatório Completo (V3: paginação, quebra de linha, anti-sobreposição)."""
 
@@ -582,21 +759,32 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
                 atraso_mask = df_pedidos['atrasado'].astype(bool).tolist()
             except Exception:
                 atraso_mask = None
+# Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
+pages = _paginate_rows_by_height(
+    doc=doc,
+    header=df_flow.columns.tolist(),
+    rows=df_flow.values.tolist(),
+    col_widths=col_widths,
+    atraso_mask=atraso_mask,
+    heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
+    min_last_rows=2
+)
 
-        for page_i, chunk in enumerate(_chunk_df(df_flow, rows_per_page)):
-            if page_i > 0:
-                elements.append(PageBreak())
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+for page_i, (start_i, length_i) in enumerate(pages):
+    if page_i > 0:
+        elements.append(PageBreak())
+        elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-            # máscara do chunk (se existir)
-            mask_chunk = None
-            if atraso_mask is not None and len(atraso_mask) >= (page_i*rows_per_page + len(chunk)):
-                mask_chunk = atraso_mask[page_i*rows_per_page : page_i*rows_per_page + len(chunk)]
+    chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+    mask_chunk = None
+    if atraso_mask is not None:
+        mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-            elements.append(_tabela_detalhamento(chunk, col_widths, atraso_mask=mask_chunk))
-            elements.append(Spacer(1, 0.3*cm))
+    elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+    elements.append(Spacer(1, 0.3*cm))
 
-        cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+
+        cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime(\'%d/%m/%Y às %H:%M\')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
 
         buffer.seek(0)
@@ -680,20 +868,32 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
                 atraso_mask = df_fornecedor['atrasado'].astype(bool).tolist()
             except Exception:
                 atraso_mask = None
+# Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
+pages = _paginate_rows_by_height(
+    doc=doc,
+    header=df_flow.columns.tolist(),
+    rows=df_flow.values.tolist(),
+    col_widths=col_widths,
+    atraso_mask=atraso_mask,
+    heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
+    min_last_rows=2
+)
 
-        for page_i, chunk in enumerate(_chunk_df(df_flow, rows_per_page)):
-            if page_i > 0:
-                elements.append(PageBreak())
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+for page_i, (start_i, length_i) in enumerate(pages):
+    if page_i > 0:
+        elements.append(PageBreak())
+        elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-            mask_chunk = None
-            if atraso_mask is not None and len(atraso_mask) >= (page_i*rows_per_page + len(chunk)):
-                mask_chunk = atraso_mask[page_i*rows_per_page : page_i*rows_per_page + len(chunk)]
+    chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+    mask_chunk = None
+    if atraso_mask is not None:
+        mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-            elements.append(_tabela_detalhamento(chunk, col_widths, atraso_mask=mask_chunk))
-            elements.append(Spacer(1, 0.3*cm))
+    elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+    elements.append(Spacer(1, 0.3*cm))
 
-        cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+
+        cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime(\'%d/%m/%Y às %H:%M\')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
 
         buffer.seek(0)
@@ -777,20 +977,32 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
                 atraso_mask = df_dept['atrasado'].astype(bool).tolist()
             except Exception:
                 atraso_mask = None
+# Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
+pages = _paginate_rows_by_height(
+    doc=doc,
+    header=df_flow.columns.tolist(),
+    rows=df_flow.values.tolist(),
+    col_widths=col_widths,
+    atraso_mask=atraso_mask,
+    heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
+    min_last_rows=2
+)
 
-        for page_i, chunk in enumerate(_chunk_df(df_flow, rows_per_page)):
-            if page_i > 0:
-                elements.append(PageBreak())
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+for page_i, (start_i, length_i) in enumerate(pages):
+    if page_i > 0:
+        elements.append(PageBreak())
+        elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-            mask_chunk = None
-            if atraso_mask is not None and len(atraso_mask) >= (page_i*rows_per_page + len(chunk)):
-                mask_chunk = atraso_mask[page_i*rows_per_page : page_i*rows_per_page + len(chunk)]
+    chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+    mask_chunk = None
+    if atraso_mask is not None:
+        mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-            elements.append(_tabela_detalhamento(chunk, col_widths, atraso_mask=mask_chunk))
-            elements.append(Spacer(1, 0.3*cm))
+    elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+    elements.append(Spacer(1, 0.3*cm))
 
-        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+
+        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime(\'%d/%m/%Y às %H:%M\')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cabecalho_rodape.on_page, onLaterPages=cabecalho_rodape.on_page)
 
         buffer.seek(0)
