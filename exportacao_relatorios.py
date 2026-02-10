@@ -388,6 +388,53 @@ def _chunk_df(df, rows_per_page):
     for i in range(0, len(df), rows_per_page):
         yield df.iloc[i:i+rows_per_page]
 
+def criar_grafico_barras_fornecedores(df, doc_width_cm=24, max_itens=8):
+    """Cria um gráfico de barras (Top fornecedores por valor) com tamanho previsível."""
+    try:
+        if df is None or df.empty:
+            return None
+
+        base = (
+            df.groupby('fornecedor_nome', dropna=False)['valor_total']
+            .sum()
+            .sort_values(ascending=False)
+            .head(max_itens)
+        )
+
+        if base.empty:
+            return None
+
+        labels = [str(x)[:18] + ('…' if len(str(x)) > 18 else '') for x in base.index]
+        values = [float(v) for v in base.values]
+
+        width = doc_width_cm * cm
+        height = 6 * cm
+
+        d = Drawing(width, height)
+        bc = VerticalBarChart()
+        bc.x = 1 * cm
+        bc.y = 0.8 * cm
+        bc.width = width - 2 * cm
+        bc.height = height - 1.6 * cm
+
+        bc.data = [values]
+        bc.categoryAxis.categoryNames = labels
+        bc.barWidth = 0.4 * cm
+        bc.groupSpacing = 0.4 * cm
+        bc.barSpacing = 0.15 * cm
+
+        bc.valueAxis.labels.fontSize = 7
+        bc.categoryAxis.labels.fontSize = 7
+        bc.categoryAxis.labels.angle = 35
+        bc.categoryAxis.labels.boxAnchor = 'ne'
+
+        bc.strokeColor = colors.HexColor('#94a3b8')
+        d.add(bc)
+        return d
+    except Exception:
+        return None
+
+
 def criar_tabela_kpi(dados, cores=True):
     """Cria tabela de KPIs estilizada"""
     
