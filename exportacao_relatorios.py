@@ -16,6 +16,17 @@ try:
         SimpleDocTemplate, Table, TableStyle, Paragraph, 
         Spacer, PageBreak, KeepTogether
     )
+    from reportlab.lib.units import cm
+        class _DocMargins:
+            HEADER_H = 2.6 * cm
+            FOOTER_H = 1.6 * cm
+        
+        DEFAULT_DOC_KW = dict(
+            topMargin=_DocMargins.HEADER_H + 1.0 * cm,
+            bottomMargin=_DocMargins.FOOTER_H + 1.0 * cm,
+            leftMargin=2.0 * cm,
+            rightMargin=2.0 * cm,
+    )
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm, mm
     from reportlab.pdfgen import canvas
