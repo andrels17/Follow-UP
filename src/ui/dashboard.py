@@ -95,7 +95,15 @@ def exibir_dashboard(_supabase):
         with col2:
             # Gráfico de departamentos
             st.subheader("🏢 Pedidos por Departamento")
-            dept_counts = df_pedidos['departamento'].value_counts().head(10)
+            dept_counts = (
+                df_pedidos["departamento"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .loc[lambda s: s != ""]
+                .value_counts()
+                .head(10)
+            )
             fig_dept = px.bar(
                 x=dept_counts.values,
                 y=dept_counts.index,
@@ -178,10 +186,27 @@ def exibir_dashboard(_supabase):
                 er.gerar_relatorio_fornecedor(df_pedidos, fornecedor, formatar_moeda_br)
         
         elif tipo_relatorio == "Por Departamento":
+            if "departamento" not in df_pedidos.columns:
+                st.error("Coluna 'departamento' não encontrada nos dados.")
+                st.caption(f"Colunas disponíveis: {list(df_pedidos.columns)}")
+                return
+        
+            departamentos = (
+                df_pedidos["departamento"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .loc[lambda s: s != ""]
+                .unique()
+                .tolist()
+            )
+            departamentos = sorted(departamentos)
+        
             departamento = st.selectbox(
                 "Selecione o departamento:",
-                sorted(df_pedidos['departamento'].unique())
+                departamentos
             )
+        
             if departamento:
                 er.gerar_relatorio_departamento(df_pedidos, departamento, formatar_moeda_br)
 
