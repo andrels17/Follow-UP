@@ -532,6 +532,11 @@ class CabecalhoRodape:
         self._draw_footer(canvas_obj)
         canvas_obj.restoreState()
 
+    # Compatibilidade com versões antigas: algumas chamadas usam 'cabecalho'
+    def cabecalho(self, canvas_obj, doc):
+        return self.on_page(canvas_obj, doc)
+
+
 # ============================================
 # HELPERS DE LAYOUT (ANTI-SOBREPOSIÇÃO)
 # ============================================
