@@ -667,7 +667,7 @@ def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
 def _build_table_from_rows(header, rows, col_widths, atraso_mask=None):
     """Cria a tabela (com repeatRows) a partir de header + rows já preparados."""
     df_pdf = pd.DataFrame(rows, columns=header)
-    return _tabela_detalhamento(df_pdf, col_widths, atraso_mask=atraso_mask)
+    return _tabela_detalhamento(df_pdf, col_widths, atraso_mask=locals().get('atraso_mask'))
 
 def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, heading_flowables=None, min_last_rows=3):
     """Paginação inteligente baseada em altura real (evita páginas com 1 linha 'perdida')."""
@@ -819,12 +819,13 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
 
         header = df_flow.columns.tolist()
 
-        rows_list, atraso_mask = _expand_rows_for_long_description(
+        rows_list, atraso_mask_new = _expand_rows_for_long_description(
 
-            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=atraso_mask
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask')
 
         )
 
+        atraso_mask = atraso_mask_new
         df_flow = pd.DataFrame(rows_list, columns=header)
 
         # Paginador (linhas por página)
@@ -843,7 +844,7 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             header=df_flow.columns.tolist(),
             rows=df_flow.values.tolist(),
             col_widths=col_widths,
-            atraso_mask=atraso_mask,
+            atraso_mask=locals().get('atraso_mask'),
             heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
             min_last_rows=3
         )
@@ -961,12 +962,13 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
 
         header = df_flow.columns.tolist()
 
-        rows_list, atraso_mask = _expand_rows_for_long_description(
+        rows_list, atraso_mask_new = _expand_rows_for_long_description(
 
-            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=atraso_mask
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask')
 
         )
 
+        atraso_mask = atraso_mask_new
         df_flow = pd.DataFrame(rows_list, columns=header)
 
         rows_per_page = 18
@@ -984,7 +986,7 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             header=df_flow.columns.tolist(),
             rows=df_flow.values.tolist(),
             col_widths=col_widths,
-            atraso_mask=atraso_mask,
+            atraso_mask=locals().get('atraso_mask'),
             heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
             min_last_rows=3
         )
@@ -1102,12 +1104,13 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
 
         header = df_flow.columns.tolist()
 
-        rows_list, atraso_mask = _expand_rows_for_long_description(
+        rows_list, atraso_mask_new = _expand_rows_for_long_description(
 
-            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=atraso_mask
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask')
 
         )
 
+        atraso_mask = atraso_mask_new
         df_flow = pd.DataFrame(rows_list, columns=header)
 
         rows_per_page = 18
@@ -1125,7 +1128,7 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             header=df_flow.columns.tolist(),
             rows=df_flow.values.tolist(),
             col_widths=col_widths,
-            atraso_mask=atraso_mask,
+            atraso_mask=locals().get('atraso_mask'),
             heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
             min_last_rows=3
         )
@@ -1169,3 +1172,4 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
     except Exception as e:
         st.error(f"Erro: {e}")
         return None
+
