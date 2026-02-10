@@ -780,15 +780,20 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             min_last_rows=2
         )
 
+        
         for page_i, (start_i, length_i) in enumerate(pages):
-
-            if length_i <= 0:
+            # Defensivo: nunca cria página (PageBreak) para blocos vazios
+            if not length_i or length_i <= 0:
                 continue
+
+            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+            if not chunk_rows:
+                continue
+
             if page_i > 0:
                 elements.append(PageBreak())
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
             mask_chunk = None
             if atraso_mask is not None:
                 mask_chunk = atraso_mask[start_i:start_i+length_i]
@@ -895,15 +900,20 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             min_last_rows=2
         )
 
+        
         for page_i, (start_i, length_i) in enumerate(pages):
-
-            if length_i <= 0:
+            # Defensivo: nunca cria página (PageBreak) para blocos vazios
+            if not length_i or length_i <= 0:
                 continue
+
+            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+            if not chunk_rows:
+                continue
+
             if page_i > 0:
                 elements.append(PageBreak())
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
             mask_chunk = None
             if atraso_mask is not None:
                 mask_chunk = atraso_mask[start_i:start_i+length_i]
@@ -1010,15 +1020,20 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             min_last_rows=2
         )
 
+        
         for page_i, (start_i, length_i) in enumerate(pages):
-
-            if length_i <= 0:
+            # Defensivo: nunca cria página (PageBreak) para blocos vazios
+            if not length_i or length_i <= 0:
                 continue
+
+            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+            if not chunk_rows:
+                continue
+
             if page_i > 0:
                 elements.append(PageBreak())
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
             mask_chunk = None
             if atraso_mask is not None:
                 mask_chunk = atraso_mask[start_i:start_i+length_i]
