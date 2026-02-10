@@ -668,6 +668,9 @@ def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, he
                 pages[-2] = (start_prev, len_prev - move)
                 pages[-1] = (start_last - move, len_last + move)
 
+    # Sanitização: remove páginas vazias (defensivo)
+    pages = [(a, b) for (a, b) in pages if b and b > 0]
+
     return pages
 
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
@@ -774,6 +777,9 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
         )
 
         for page_i, (start_i, length_i) in enumerate(pages):
+
+            if length_i <= 0:
+                continue
             if page_i > 0:
                 elements.append(PageBreak())
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
@@ -883,6 +889,9 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         )
 
         for page_i, (start_i, length_i) in enumerate(pages):
+
+            if length_i <= 0:
+                continue
             if page_i > 0:
                 elements.append(PageBreak())
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
@@ -992,6 +1001,9 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         )
 
         for page_i, (start_i, length_i) in enumerate(pages):
+
+            if length_i <= 0:
+                continue
             if page_i > 0:
                 elements.append(PageBreak())
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
