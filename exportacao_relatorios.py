@@ -1244,9 +1244,7 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
                 elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
                 elements.append(Spacer(1, 0.3 * cm))
-
-
-                cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
+        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cabecalho_rodape.on_page, onLaterPages=cabecalho_rodape.on_page)
 
         buffer.seek(0)
