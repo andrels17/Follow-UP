@@ -887,6 +887,10 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             Spacer(1, 0.6 * cm)
         ]))
 
+        # Detalhamento
+        # Para evitar sobreposição (gráfico x tabela), inicia detalhamento em nova página
+        elements.append(PageBreak())
+
         # Detalhamento com paginação
         # Detalhamento (paginação inteligente)
 
@@ -1000,6 +1004,9 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             Spacer(1, 0.6 * cm)
         ]))
 
+        # Para evitar sobreposição (gráfico x tabela), inicia detalhamento em nova página
+        elements.append(PageBreak())
+
         # Detalhamento
         # Detalhamento (paginação inteligente)
 
@@ -1108,6 +1115,9 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             graf,
             Spacer(1, 0.4 * cm)
         ]))
+
+        # Para evitar sobreposição (gráfico x tabela), inicia detalhamento em nova página
+        elements.append(PageBreak())
 
         # Começa detalhamento sempre em nova página (evita colidir com gráfico)
         # Detalhamento (paginação inteligente)
