@@ -549,6 +549,23 @@ DEFAULT_DOC_KW = dict(
     rightMargin=2.0 * cm,
 )
 
+def _safe_page_break(elements):
+    """Adiciona PageBreak apenas quando faz sentido (evita páginas em branco)."""
+    try:
+        if not elements:
+            return
+        if isinstance(elements[-1], PageBreak):
+            return
+        # Remove Spacers finais insignificantes antes de quebrar
+        while elements and isinstance(elements[-1], Spacer):
+            elements.pop()
+        if not elements or isinstance(elements[-1], PageBreak):
+            return
+        elements.append(PageBreak())
+    except Exception:
+        # fallback: comportamento antigo
+        elements.append(PageBreak())
+
 def _safe_money(v, formatar_moeda_br):
     """Formata valores monetários e evita '0.0' poluindo o relatório."""
     try:
@@ -936,6 +953,8 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
             min_last_rows=3
         )
+        # Sanitização extra: evita páginas vazias (defensivo)
+        pages = [(a, b) for (a, b) in pages if b and b > 0]
 
         
         
@@ -954,14 +973,12 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
 
             if page_i == 0:
                 # Mantém título + primeira tabela juntas para evitar título solitário
-                elements.append(KeepTogether([
-                    Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)),
-                    _build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk),
-                    Spacer(1, 0.3 * cm)
-                ]))
+                elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+                elements.append(Spacer(1, 0.3 * cm))
             else:
                 # Para páginas seguintes, quebra antes e mostra continuação
-                elements.append(PageBreak())
+                _safe_page_break(elements)
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
                 elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
                 elements.append(Spacer(1, 0.3 * cm))
@@ -1078,6 +1095,8 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
             min_last_rows=3
         )
+        # Sanitização extra: evita páginas vazias (defensivo)
+        pages = [(a, b) for (a, b) in pages if b and b > 0]
 
         
         
@@ -1096,14 +1115,12 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
 
             if page_i == 0:
                 # Mantém título + primeira tabela juntas para evitar título solitário
-                elements.append(KeepTogether([
-                    Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)),
-                    _build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk),
-                    Spacer(1, 0.3 * cm)
-                ]))
+                elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+                elements.append(Spacer(1, 0.3 * cm))
             else:
                 # Para páginas seguintes, quebra antes e mostra continuação
-                elements.append(PageBreak())
+                _safe_page_break(elements)
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
                 elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
                 elements.append(Spacer(1, 0.3 * cm))
@@ -1220,6 +1237,8 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
             min_last_rows=3
         )
+        # Sanitização extra: evita páginas vazias (defensivo)
+        pages = [(a, b) for (a, b) in pages if b and b > 0]
 
         
         
@@ -1238,14 +1257,12 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
 
             if page_i == 0:
                 # Mantém título + primeira tabela juntas para evitar título solitário
-                elements.append(KeepTogether([
-                    Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)),
-                    _build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk),
-                    Spacer(1, 0.3 * cm)
-                ]))
+                elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+                elements.append(Spacer(1, 0.3 * cm))
             else:
                 # Para páginas seguintes, quebra antes e mostra continuação
-                elements.append(PageBreak())
+                _safe_page_break(elements)
                 elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
                 elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
                 elements.append(Spacer(1, 0.3 * cm))
