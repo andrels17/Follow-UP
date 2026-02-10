@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import io
+from reportlab.platypus import LongTable
 
 # Importações para PDF
 try:
@@ -309,29 +310,36 @@ def preparar_dados_exportacao(df):
 # ============================================
 
 class CabecalhoRodape:
-    """Classe para criar cabeçalho e rodapé premium"""
-    
     def __init__(self, titulo, subtitulo=""):
         self.titulo = titulo
         self.subtitulo = subtitulo
-    
-    def cabecalho(self, canvas_obj, doc):
+
+    def desenhar(self, canvas_obj, doc):
         canvas_obj.saveState()
-        
-        # Fundo gradiente do cabeçalho
-        canvas_obj.setFillColorRGB(0.4, 0.49, 0.92)  # #667eea
-        canvas_obj.rect(0, doc.height + doc.topMargin - 2*cm, doc.width + doc.leftMargin + doc.rightMargin, 2.5*cm, fill=1, stroke=0)
-        
-        # Título
-        canvas_obj.setFillColorRGB(1, 1, 1)
-        canvas_obj.setFont('Helvetica-Bold', 20)
+
+        # Cabeçalho (faixa)
+        canvas_obj.setFillColor(colors.HexColor("#667eea"))
+        canvas_obj.rect(0, doc.height + doc.topMargin - 2*cm,
+                        doc.width + doc.leftMargin + doc.rightMargin, 2.5*cm,
+                        fill=1, stroke=0)
+
+        canvas_obj.setFillColor(colors.white)
+        canvas_obj.setFont("Helvetica-Bold", 18)
         canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin - 1.2*cm, self.titulo)
-        
-        # Subtítulo
-        if self.subtitulo:
-            canvas_obj.setFont('Helvetica', 11)
-            canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin - 1.8*cm, self.subtitulo)
-        
+
+        canvas_obj.setFont("Helvetica", 10)
+        canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin - 1.8*cm, self.subtitulo)
+
+        # Rodapé
+        canvas_obj.setStrokeColor(colors.HexColor("#667eea"))
+        canvas_obj.setLineWidth(1)
+        canvas_obj.line(doc.leftMargin, 18*mm, doc.width + doc.leftMargin, 18*mm)
+
+        canvas_obj.setFillColor(colors.HexColor("#334155"))
+        canvas_obj.setFont("Helvetica", 9)
+        canvas_obj.drawString(doc.leftMargin, 12*mm, f"Follow-up de Compras © {datetime.now().year}")
+        canvas_obj.drawRightString(doc.width + doc.leftMargin, 12*mm, f"Página {canvas_obj.getPageNumber()}")
+
         canvas_obj.restoreState()
     
     def rodape(self, canvas_obj, doc):
@@ -356,7 +364,7 @@ class CabecalhoRodape:
 def criar_tabela_kpi(dados, cores=True):
     """Cria tabela de KPIs estilizada"""
     
-    table = Table(dados, colWidths=[8*cm, 6*cm])
+    tabela = LongTable(tabela_dados, repeatRows=1, colWidths=[...])
     
     estilo = [
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
@@ -379,6 +387,14 @@ def criar_tabela_kpi(dados, cores=True):
     table.setStyle(TableStyle(estilo))
     return table
 
+def moeda_br(v):
+    try:
+        v = float(v)
+    except Exception:
+        v = 0.0
+    s = f"{v:,.2f}"
+    # troca padrão US para BR
+    return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
     """PDF Premium - Relatório Completo"""
@@ -459,8 +475,11 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
         elements.append(tabela)
         
         # Gerar PDF
-        cabecalho_rodape = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
-        doc.build(elements, onFirstPage=cabecalho_rodape.cabecalho, onLaterPages=cabecalho_rodape.cabecalho)
+        cab = CabecalhoRodape(
+            f"Departamento: {departamento}",
+            f"Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        )
+        doc.build(elements, onFirstPage=cab.desenhar, onLaterPages=cab.desenhar)
         
         buffer.seek(0)
         return buffer
@@ -571,8 +590,21 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         colunas = ['N° OC', 'Departamento', 'Descrição', 'Valor (R$)', 'Status']
         df_pdf = df_export[[c for c in colunas if c in df_export.columns]]
         
-        if 'Descrição' in df_pdf.columns:
-            df_pdf['Descrição'] = df_pdf['Descrição'].astype(str).str[:45] + '...'
+        styles = getSampleStyleSheet()
+        cell_style = ParagraphStyle(
+            "cell",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=10,
+        )
+        
+        def p(txt):
+            return Paragraph(str(txt).replace("\n", " "), cell_style)
+        
+        # Exemplo: aplicar só na descrição
+        if "Descrição" in df_pdf.columns:
+            df_pdf["Descrição"] = df_pdf["Descrição"].apply(p)
         
         tabela_dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
         tabela = Table(tabela_dados, colWidths=[4*cm, 4*cm, 10*cm, 4*cm, 3.5*cm])
