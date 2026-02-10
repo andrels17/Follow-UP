@@ -615,7 +615,7 @@ def _build_table_from_rows(header, rows, col_widths, atraso_mask=None):
     df_pdf = pd.DataFrame(rows, columns=header)
     return _tabela_detalhamento(df_pdf, col_widths, atraso_mask=atraso_mask)
 
-def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, heading_flowables=None, min_last_rows=2):
+def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, heading_flowables=None, min_last_rows=3):
     """Paginação inteligente baseada em altura real (evita páginas com 1 linha 'perdida')."""
     if heading_flowables is None:
         heading_flowables = []
@@ -729,8 +729,7 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
         ]))
 
         # Detalhamento com paginação
-        elements.append(PageBreak())
-        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+        # Detalhamento (paginação inteligente)
 
         df_export = preparar_dados_exportacao(df_pedidos)
         # Colunas padrão
@@ -776,8 +775,8 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             rows=df_flow.values.tolist(),
             col_widths=col_widths,
             atraso_mask=atraso_mask,
-            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
-            min_last_rows=2
+            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
+            min_last_rows=3
         )
 
         
@@ -860,8 +859,7 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         ]))
 
         # Detalhamento
-        elements.append(PageBreak())
-        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+        # Detalhamento (paginação inteligente)
 
         df_export = preparar_dados_exportacao(df_fornecedor)
         colunas = ['N° OC', 'Departamento', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
@@ -903,8 +901,8 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             rows=df_flow.values.tolist(),
             col_widths=col_widths,
             atraso_mask=atraso_mask,
-            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
-            min_last_rows=2
+            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
+            min_last_rows=3
         )
 
         
@@ -987,8 +985,7 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         ]))
 
         # Começa detalhamento sempre em nova página (evita colidir com gráfico)
-        elements.append(PageBreak())
-        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+        # Detalhamento (paginação inteligente)
 
         df_export = preparar_dados_exportacao(df_dept)
         colunas = ['N° OC', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
@@ -1030,8 +1027,8 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             rows=df_flow.values.tolist(),
             col_widths=col_widths,
             atraso_mask=atraso_mask,
-            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
-            min_last_rows=2
+            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
+            min_last_rows=3
         )
 
         
