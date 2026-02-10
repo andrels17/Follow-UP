@@ -52,7 +52,7 @@ def _split_text_chunks(text, max_chars=240):
         start = end
     return chunks or [s]
 
-def _expand_rows_for_long_description(rows, header, desc_col='Descrição', max_chars=240, atraso_mask=None):
+def _expand_rows_for_long_description(rows, header, desc_col='Descrição', max_chars=240, atraso_mask=None, desc_style=None):
     if not rows:
         return rows, atraso_mask
     try:
@@ -78,7 +78,15 @@ def _expand_rows_for_long_description(rows, header, desc_col='Descrição', max_
                 for k in range(len(new_row)):
                     if k != desc_idx:
                         new_row[k] = ""
-            new_row[desc_idx] = part
+            # mantém quebra/wordwrap: se veio Paragraph no input e você quer preservar,
+            # reconstrói como Paragraph usando o mesmo style
+            if desc_style is not None:
+                try:
+                    new_row[desc_idx] = Paragraph(str(part), desc_style)
+                except Exception:
+                    new_row[desc_idx] = str(part)
+            else:
+                new_row[desc_idx] = part
             expanded.append(new_row)
             if atraso_exp is not None:
                 atraso_exp.append(atraso_mask[i])
@@ -667,7 +675,7 @@ def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
         ('FONTSIZE', (0, 0), (-1, 0), 9),
         ('FONTSIZE', (0, 1), (-1, -1), 8),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('WORDWRAP', (0, 0), (-1, -1), 'CJK'),
         ('LEFTPADDING', (0, 0), (-1, -1), 6),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 6),
@@ -911,17 +919,6 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
 
         # Converter para flowables
         rows = []
-        base_style = ParagraphStyle(
-            'Base',
-            parent=styles['BodyText'],
-            fontSize=8,
-            leading=10,
-            wordWrap='CJK',
-            splitLongWords=1,
-            spaceBefore=0,
-            spaceAfter=0
-        )
-
         for _, r in df_pdf.iterrows():
             row = []
             for c in df_pdf.columns:
@@ -930,11 +927,9 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
                 elif c == 'Fornecedor':
                     row.append(Paragraph(str(r[c]), forn_style))
                 elif c == 'Valor (R$)':
-                    row.append(Paragraph(_safe_money(r[c], formatar_moeda_br), base_style))
+                    row.append(_safe_money(r[c], formatar_moeda_br))
                 else:
-                    row.append(Paragraph(str(r[c]), base_style))
-            rows.append(row)
-                    
+                    row.append(str(r[c]))
             rows.append(row)
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
@@ -948,7 +943,7 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
 
         rows_list, atraso_mask_new = _expand_rows_for_long_description(
 
-            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask')
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask'), desc_style=desc_style
 
         )
 
@@ -1037,17 +1032,6 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         rows = []
-        base_style = ParagraphStyle(
-            'Base',
-            parent=styles['BodyText'],
-            fontSize=8,
-            leading=10,
-            wordWrap='CJK',
-            splitLongWords=1,
-            spaceBefore=0,
-            spaceAfter=0
-        )
-
         for _, r in df_pdf.iterrows():
             row = []
             for c in df_pdf.columns:
@@ -1056,9 +1040,9 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
                 elif c == 'Fornecedor':
                     row.append(Paragraph(str(r[c]), forn_style))
                 elif c == 'Valor (R$)':
-                    row.append(Paragraph(_safe_money(r[c], formatar_moeda_br), base_style))
+                    row.append(_safe_money(r[c], formatar_moeda_br))
                 else:
-                    row.append(Paragraph(str(r[c]), base_style))
+                    row.append(str(r[c]))
             rows.append(row)
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
@@ -1072,7 +1056,7 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
 
         rows_list, atraso_mask_new = _expand_rows_for_long_description(
 
-            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask')
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask'), desc_style=desc_style
 
         )
 
@@ -1160,18 +1144,6 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         rows = []
-
-        base_style = ParagraphStyle(
-            'Base',
-            parent=styles['BodyText'],
-            fontSize=8,
-            leading=10,
-            wordWrap='CJK',
-            splitLongWords=1,
-            spaceBefore=0,
-            spaceAfter=0
-        )
-
         for _, r in df_pdf.iterrows():
             row = []
             for c in df_pdf.columns:
@@ -1180,9 +1152,9 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
                 elif c == 'Fornecedor':
                     row.append(Paragraph(str(r[c]), forn_style))
                 elif c == 'Valor (R$)':
-                    row.append(Paragraph(_safe_money(r[c], formatar_moeda_br), base_style))
+                    row.append(_safe_money(r[c], formatar_moeda_br))
                 else:
-                    row.append(Paragraph(str(r[c]), base_style))
+                    row.append(str(r[c]))
             rows.append(row)
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
@@ -1196,7 +1168,7 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
 
         rows_list, atraso_mask_new = _expand_rows_for_long_description(
 
-            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask')
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=locals().get('atraso_mask'), desc_style=desc_style
 
         )
 
