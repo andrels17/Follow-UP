@@ -461,6 +461,34 @@ def criar_tabela_kpi(dados, cores=True):
     table.setStyle(TableStyle(estilo))
     return table
 
+def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
+    """Monta tabela com repeatRows e estilo consistente, com destaque opcional para atrasados."""
+    dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
+    t = Table(dados, colWidths=col_widths, repeatRows=1, hAlign='LEFT')
+
+    estilo = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')]),
+    ]
+
+    if atraso_mask is not None:
+        for i, is_atraso in enumerate(atraso_mask, start=1):
+            if bool(is_atraso):
+                estilo.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fee2e2')))
+
+    t.setStyle(TableStyle(estilo))
+    return t
 
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
     """PDF Premium - Relatório Completo (V3: paginação, quebra de linha, anti-sobreposição)."""
