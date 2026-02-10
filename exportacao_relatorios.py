@@ -1070,4 +1070,3 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
     except Exception as e:
         st.error(f"Erro: {e}")
         return None
-
