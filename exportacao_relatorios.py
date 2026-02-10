@@ -670,6 +670,7 @@ def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, he
 
     # Sanitização: remove páginas vazias (defensivo)
     pages = [(a, b) for (a, b) in pages if b and b > 0]
+    pages = [(a, min(b, n - a)) for (a, b) in pages if a < n and (n - a) > 0]
 
     return pages
 
@@ -721,8 +722,11 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
         # Gráfico (Top fornecedores)
         graf = criar_grafico_barras_fornecedores(df_pedidos, doc_width_cm=24, max_itens=8)
         if graf is not None:
-            elements.append(Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)))
-            elements.append(KeepTogether([graf, Spacer(1, 0.6 * cm)]))
+            elements.append(KeepTogether([
+            Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)),
+            graf,
+            Spacer(1, 0.6 * cm)
+        ]))
 
         # Detalhamento com paginação
         elements.append(PageBreak())
@@ -837,8 +841,11 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         # Gráfico (Top itens por valor dentro do fornecedor) – opcional
         graf = criar_grafico_barras_fornecedores(df_fornecedor, doc_width_cm=24, max_itens=6)
         if graf is not None:
-            elements.append(Paragraph("Top (por valor) dentro do fornecedor", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)))
-            elements.append(KeepTogether([graf, Spacer(1, 0.6 * cm)]))
+            elements.append(KeepTogether([
+            Paragraph("Top (por valor) dentro do fornecedor", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)),
+            graf,
+            Spacer(1, 0.6 * cm)
+        ]))
 
         # Detalhamento
         elements.append(PageBreak())
@@ -949,8 +956,11 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         # Gráfico fixo com tamanho previsível + KeepTogether
         graf = criar_grafico_barras_fornecedores(df_dept, doc_width_cm=24, max_itens=8)
         if graf is not None:
-            elements.append(Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)))
-            elements.append(KeepTogether([graf, Spacer(1, 0.4 * cm)]))
+            elements.append(KeepTogether([
+            Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)),
+            graf,
+            Spacer(1, 0.4 * cm)
+        ]))
 
         # Começa detalhamento sempre em nova página (evita colidir com gráfico)
         elements.append(PageBreak())
