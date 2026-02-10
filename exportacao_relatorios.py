@@ -668,8 +668,13 @@ def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
         ('FONTSIZE', (0, 1), (-1, -1), 8),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('WORDWRAP', (0, 0), (-1, -1), 'CJK'),
         ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        # mais respiro entre colunas longas (Descrição) e dinheiro
+        ('RIGHTPADDING', (3, 0), (3, -1), 10),
+        ('LEFTPADDING', (4, 0), (4, -1), 10),
+        ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
@@ -689,7 +694,7 @@ def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
 def _build_table_from_rows(header, rows, col_widths, atraso_mask=None):
     """Cria a tabela (com repeatRows) a partir de header + rows já preparados."""
     df_pdf = pd.DataFrame(rows, columns=header)
-    return _tabela_detalhamento(df_pdf, col_widths, atraso_mask=locals().get('atraso_mask'))
+    return _tabela_detalhamento(df_pdf, col_widths, atraso_mask=atraso_mask)
 
 def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, heading_flowables=None, min_last_rows=3):
     """Paginação inteligente baseada em altura real (evita páginas com 1 linha 'perdida')."""
@@ -901,8 +906,8 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
         df_pdf = df_export[cols].copy()
 
         # Estilos de parágrafo (quebra de linha)
-        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10)
-        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10)
+        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
+        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         # Converter para flowables
         rows = []
@@ -1015,8 +1020,8 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         cols = [c for c in colunas if c in df_export.columns]
         df_pdf = df_export[cols].copy()
 
-        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10)
-        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10)
+        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
+        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         rows = []
         for _, r in df_pdf.iterrows():
@@ -1127,8 +1132,8 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         cols = [c for c in colunas if c in df_export.columns]
         df_pdf = df_export[cols].copy()
 
-        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10)
-        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10)
+        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
+        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         rows = []
         for _, r in df_pdf.iterrows():
