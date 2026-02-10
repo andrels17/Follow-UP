@@ -57,15 +57,17 @@ def filtrar_por_periodo(df, data_inicio=None, data_fim=None, coluna_data='data_o
 
 def ui_filtro_periodo(
     df,
+    coluna_data=None,
     colunas_data=('data_oc', 'data_solicitacao', 'previsao_entrega'),
     nomes_colunas=None,
     label='Período'
 ):
     """Componente Streamlit para filtro de período com seletor de coluna de data.
 
+    Backward compatible:
+    - se coluna_data for informado, ele vira o padrão e aparece como primeira opção.
+
     Retorna: (df_filtrado, texto_subtitulo, coluna_escolhida)
-    - colunas_data: tupla/lista de colunas candidatas (usa as que existirem no df)
-    - nomes_colunas: dict opcional {coluna: nome_legivel}
     """
     if df is None or df.empty:
         return df, "", None
@@ -77,8 +79,14 @@ def ui_filtro_periodo(
             'previsao_entrega': 'Previsão de Entrega',
         }
 
-    # Mantém apenas colunas existentes
-    colunas_existentes = [c for c in colunas_data if c in df.columns]
+    # Monta lista de colunas candidatas respeitando coluna_data (se vier)
+    candidatos = list(colunas_data)
+    if coluna_data:
+        # coloca a escolhida em primeiro sem duplicar
+        candidatos = [coluna_data] + [c for c in candidatos if c != coluna_data]
+
+    # Mantém apenas colunas existentes no df
+    colunas_existentes = [c for c in candidatos if c in df.columns]
     if not colunas_existentes:
         return df, "", None
 
@@ -87,21 +95,16 @@ def ui_filtro_periodo(
         usar = st.checkbox(f"Filtrar por {label}", value=False, key=f"filtro_{label}")
 
     with col2:
-        # Seletor de coluna de data
         opcoes = [nomes_colunas.get(c, c) for c in colunas_existentes]
-        # default: primeira opção
-        escolhido_idx = 0
-        nome_escolhido = st.selectbox("Base de data", opcoes, index=escolhido_idx, disabled=not usar, key=f"col_{label}")
-        # map back to coluna
+        nome_escolhido = st.selectbox("Base de data", opcoes, index=0, disabled=not usar, key=f"col_{label}")
         coluna_escolhida = colunas_existentes[opcoes.index(nome_escolhido)]
 
-    # Preparar min/max para inputs
-    s = pd.to_datetime(df[coluna_escolhida], errors='coerce').dropna() if 'coluna_escolhida' in locals() else pd.Series([], dtype='datetime64[ns]')
-    if s.empty:
-        return df, "", coluna_escolhida if 'coluna_escolhida' in locals() else None
+    s_dt = pd.to_datetime(df[coluna_escolhida], errors='coerce').dropna()
+    if s_dt.empty:
+        return df, "", coluna_escolhida
 
-    min_d = s.min().date()
-    max_d = s.max().date()
+    min_d = s_dt.min().date()
+    max_d = s_dt.max().date()
 
     with col3:
         d_ini = st.date_input("Data inicial", value=min_d, min_value=min_d, max_value=max_d, disabled=not usar, key=f"ini_{label}")
