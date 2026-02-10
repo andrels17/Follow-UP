@@ -911,6 +911,17 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
 
         # Converter para flowables
         rows = []
+        base_style = ParagraphStyle(
+            'Base',
+            parent=styles['BodyText'],
+            fontSize=8,
+            leading=10,
+            wordWrap='CJK',
+            splitLongWords=1,
+            spaceBefore=0,
+            spaceAfter=0
+        )
+
         for _, r in df_pdf.iterrows():
             row = []
             for c in df_pdf.columns:
@@ -919,9 +930,11 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
                 elif c == 'Fornecedor':
                     row.append(Paragraph(str(r[c]), forn_style))
                 elif c == 'Valor (R$)':
-                    row.append(_safe_money(r[c], formatar_moeda_br))
+                    row.append(Paragraph(_safe_money(r[c], formatar_moeda_br), base_style))
                 else:
-                    row.append(str(r[c]))
+                    row.append(Paragraph(str(r[c]), base_style))
+            rows.append(row)
+                    
             rows.append(row)
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
@@ -1024,6 +1037,17 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         rows = []
+        base_style = ParagraphStyle(
+            'Base',
+            parent=styles['BodyText'],
+            fontSize=8,
+            leading=10,
+            wordWrap='CJK',
+            splitLongWords=1,
+            spaceBefore=0,
+            spaceAfter=0
+        )
+
         for _, r in df_pdf.iterrows():
             row = []
             for c in df_pdf.columns:
@@ -1032,9 +1056,9 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
                 elif c == 'Fornecedor':
                     row.append(Paragraph(str(r[c]), forn_style))
                 elif c == 'Valor (R$)':
-                    row.append(_safe_money(r[c], formatar_moeda_br))
+                    row.append(Paragraph(_safe_money(r[c], formatar_moeda_br), base_style))
                 else:
-                    row.append(str(r[c]))
+                    row.append(Paragraph(str(r[c]), base_style))
             rows.append(row)
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
@@ -1136,6 +1160,18 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10, wordWrap='CJK', splitLongWords=1)
 
         rows = []
+
+        base_style = ParagraphStyle(
+            'Base',
+            parent=styles['BodyText'],
+            fontSize=8,
+            leading=10,
+            wordWrap='CJK',
+            splitLongWords=1,
+            spaceBefore=0,
+            spaceAfter=0
+        )
+
         for _, r in df_pdf.iterrows():
             row = []
             for c in df_pdf.columns:
@@ -1144,9 +1180,9 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
                 elif c == 'Fornecedor':
                     row.append(Paragraph(str(r[c]), forn_style))
                 elif c == 'Valor (R$)':
-                    row.append(_safe_money(r[c], formatar_moeda_br))
+                    row.append(Paragraph(_safe_money(r[c], formatar_moeda_br), base_style))
                 else:
-                    row.append(str(r[c]))
+                    row.append(Paragraph(str(r[c]), base_style))
             rows.append(row)
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
