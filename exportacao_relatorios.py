@@ -309,49 +309,56 @@ def preparar_dados_exportacao(df):
 # ============================================
 
 class CabecalhoRodape:
-    """Classe para criar cabeçalho e rodapé premium"""
-    
+    """Cabeçalho e rodapé premium (sem sobreposição com o conteúdo).
+
+    Importante: o espaço do cabeçalho/rodapé deve ser reservado via topMargin/bottomMargin
+    ao criar o SimpleDocTemplate (veja DEFAULT_DOC_KW).
+    """
+
+    HEADER_H = 2.6 * cm
+    FOOTER_H = 1.6 * cm
+
     def __init__(self, titulo, subtitulo=""):
         self.titulo = titulo
-        self.subtitulo = subtitulo
-    
-    def cabecalho(self, canvas_obj, doc):
-        canvas_obj.saveState()
-        
-        # Fundo gradiente do cabeçalho
+        self.subtitulo = subtitulo or ""
+
+    def _draw_header(self, canvas_obj):
+        page_w, page_h = canvas_obj._pagesize
+
+        # Fundo do cabeçalho (dentro da área de margem superior)
         canvas_obj.setFillColorRGB(0.4, 0.49, 0.92)  # #667eea
-        canvas_obj.rect(0, doc.height + doc.topMargin - 2*cm, doc.width + doc.leftMargin + doc.rightMargin, 2.5*cm, fill=1, stroke=0)
-        
+        canvas_obj.rect(0, page_h - self.HEADER_H, page_w, self.HEADER_H, fill=1, stroke=0)
+
         # Título
         canvas_obj.setFillColorRGB(1, 1, 1)
-        canvas_obj.setFont('Helvetica-Bold', 20)
-        canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin - 1.2*cm, self.titulo)
-        
+        canvas_obj.setFont('Helvetica-Bold', 18)
+        canvas_obj.drawString(2 * cm, page_h - 1.15 * cm, self.titulo)
+
         # Subtítulo
         if self.subtitulo:
-            canvas_obj.setFont('Helvetica', 11)
-            canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin - 1.8*cm, self.subtitulo)
-        
-        canvas_obj.restoreState()
-    
-    def rodape(self, canvas_obj, doc):
-        canvas_obj.saveState()
-        
+            canvas_obj.setFont('Helvetica', 10.5)
+            canvas_obj.drawString(2 * cm, page_h - 1.85 * cm, self.subtitulo)
+
+    def _draw_footer(self, canvas_obj):
+        page_w, _ = canvas_obj._pagesize
+
         # Linha decorativa
+        y = self.FOOTER_H + 0.45 * cm
         canvas_obj.setStrokeColorRGB(0.4, 0.49, 0.92)
-        canvas_obj.setLineWidth(1.5)
-        canvas_obj.line(doc.leftMargin, 2*cm, doc.width + doc.leftMargin, 2*cm)
-        
-        # Página
+        canvas_obj.setLineWidth(1.2)
+        canvas_obj.line(2 * cm, y, page_w - 2 * cm, y)
+
+        # Textos
         canvas_obj.setFillColorRGB(0.3, 0.3, 0.3)
         canvas_obj.setFont('Helvetica', 9)
-        canvas_obj.drawRightString(doc.width + doc.leftMargin, 1.5*cm, f"Página {canvas_obj.getPageNumber()}")
-        
-        # Sistema
-        canvas_obj.drawString(doc.leftMargin, 1.5*cm, f"Follow-up de Compras © {datetime.now().year}")
-        
-        canvas_obj.restoreState()
+        canvas_obj.drawString(2 * cm, 0.9 * cm, f"Follow-up de Compras © {datetime.now().year}")
+        canvas_obj.drawRightString(page_w - 2 * cm, 0.9 * cm, f"Página {canvas_obj.getPageNumber()}")
 
+    def on_page(self, canvas_obj, doc):
+        canvas_obj.saveState()
+        self._draw_header(canvas_obj)
+        self._draw_footer(canvas_obj)
+        canvas_obj.restoreState()
 
 def criar_tabela_kpi(dados, cores=True):
     """Cria tabela de KPIs estilizada"""
@@ -380,352 +387,204 @@ def criar_tabela_kpi(dados, cores=True):
     return table
 
 
+
+
+def criar_grafico_barras_fornecedores(df, doc_width_cm=24, max_itens=8):
+    """Cria um gráfico de barras (Top fornecedores por valor) com tamanho previsível.
+
+    Retorna um Drawing com altura fixa (evita sobreposição).
+    """
+    try:
+        if df is None or df.empty:
+            return None
+
+        base = df.groupby('fornecedor_nome', dropna=False)['valor_total'].sum().sort_values(ascending=False).head(max_itens)
+        if base.empty:
+            return None
+
+        labels = [str(x)[:18] + ("…" if len(str(x)) > 18 else "") for x in base.index.tolist()]
+        values = [float(v) for v in base.values.tolist()]
+
+        # Dimensões: width baseado no doc, height fixa
+        width = doc_width_cm * cm
+        height = 6.2 * cm
+
+        d = Drawing(width, height)
+        bc = VerticalBarChart()
+        bc.x = 0.9 * cm
+        bc.y = 0.8 * cm
+        bc.width = width - 1.4 * cm
+        bc.height = height - 1.6 * cm
+
+        bc.data = [values]
+        bc.categoryAxis.categoryNames = labels
+        bc.barWidth = 0.35 * cm
+        bc.groupSpacing = 0.35 * cm
+        bc.barSpacing = 0.15 * cm
+
+        # Eixos (fontes menores para caber)
+        bc.valueAxis.labels.fontSize = 7
+        bc.categoryAxis.labels.fontSize = 7
+        bc.categoryAxis.labels.boxAnchor = 'ne'
+        bc.categoryAxis.labels.angle = 35
+
+        # Cores default do reportlab; apenas borda suave
+        bc.strokeColor = colors.HexColor('#94a3b8')
+
+        d.add(bc)
+        return d
+    except Exception:
+        return None
+
+def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
+    """Monta tabela com repeatRows e estilo consistente, com destaque opcional para atrasados."""
+    dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
+    t = Table(dados, colWidths=col_widths, repeatRows=1, hAlign='LEFT')
+
+    estilo = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')]),
+    ]
+
+    # Destaque de atrasados (linha inteira)
+    if atraso_mask is not None:
+        for i, is_atraso in enumerate(atraso_mask, start=1):  # start=1 por causa do header
+            if bool(is_atraso):
+                estilo.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fee2e2')))
+
+    t.setStyle(TableStyle(estilo))
+    return t
+
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
-    """PDF Premium - Relatório Completo"""
-    
+    """PDF Premium - Relatório Completo (V3: paginação, quebra de linha, anti-sobreposição)."""
+
     if not PDF_DISPONIVEL:
         return None
-    
+
     try:
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
             buffer,
             pagesize=landscape(A4),
-            topMargin=3*cm,
-            bottomMargin=2.5*cm,
-            leftMargin=2*cm,
-            rightMargin=2*cm
+            **DEFAULT_DOC_KW
         )
-        
+
         elements = []
         styles = getSampleStyleSheet()
-        
-        # Título
+
         titulo_style = ParagraphStyle(
             'Titulo',
             parent=styles['Heading1'],
-            fontSize=26,
+            fontSize=22,
             textColor=colors.HexColor('#1e293b'),
-            spaceAfter=15,
+            spaceAfter=10,
             alignment=TA_CENTER,
             fontName='Helvetica-Bold'
         )
-        
         elements.append(Paragraph("Relatório Completo de Pedidos", titulo_style))
-        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=15))
-        
+        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=12))
+
         # KPIs
         total = len(df_pedidos)
-        valor = df_pedidos['valor_total'].sum()
-        entregues = (df_pedidos['entregue'] == True).sum()
-        atrasados = (df_pedidos['atrasado'] == True).sum()
-        
+        valor = df_pedidos['valor_total'].sum() if 'valor_total' in df_pedidos.columns else 0
+        entregues = (df_pedidos['entregue'] == True).sum() if 'entregue' in df_pedidos.columns else 0
+        atrasados = (df_pedidos['atrasado'] == True).sum() if 'atrasado' in df_pedidos.columns else 0
+
         kpi_dados = [
             ['INDICADOR', 'VALOR'],
             ['📦 Total de Pedidos', f'{total:,}'.replace(',', '.')],
-            ['💰 Valor Total', formatar_moeda_br(valor)],
-            ['✅ Pedidos Entregues', f'{entregues:,} ({entregues/total*100:.1f}%)'.replace(',', '.')],
-            ['⚠️ Pedidos Atrasados', f'{atrasados:,} ({atrasados/total*100:.1f}%)'.replace(',', '.')]
+            ['💰 Valor Total', _safe_money(valor, formatar_moeda_br)],
+            ['✅ Pedidos Entregues', f'{entregues:,} ({(entregues/total*100 if total else 0):.1f}%)'.replace(',', '.')],
+            ['⚠️ Pedidos Atrasados', f'{atrasados:,} ({(atrasados/total*100 if total else 0):.1f}%)'.replace(',', '.')],
         ]
-        
         elements.append(criar_tabela_kpi(kpi_dados))
-        elements.append(Spacer(1, 1*cm))
-        
-        # Tabela de pedidos
-        subtitulo = ParagraphStyle('Subtitulo', parent=styles['Heading2'], fontSize=16, spaceBefore=10, spaceAfter=10)
-        elements.append(Paragraph("Histórico de Pedidos (Top 50)", subtitulo))
-        
-        df_export = preparar_dados_exportacao(df_pedidos.head(50))
-        colunas_pdf = ['N° OC', 'Departamento', 'Descrição', 'Fornecedor', 'Valor (R$)', 'Status']
-        df_pdf = df_export[[c for c in colunas_pdf if c in df_export.columns]]
-        
-        if 'Descrição' in df_pdf.columns:
-            df_pdf['Descrição'] = df_pdf['Descrição'].astype(str).str[:35] + '...'
-        
-        tabela_dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
-        
-        tabela = Table(tabela_dados, colWidths=[3.5*cm, 3.5*cm, 7*cm, 5*cm, 3.5*cm, 3*cm])
-        tabela.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')])
-        ]))
-        
-        elements.append(tabela)
-        
-        # Gerar PDF
-        cabecalho_rodape = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
-        doc.build(elements, onFirstPage=cabecalho_rodape.cabecalho, onLaterPages=cabecalho_rodape.cabecalho)
-        
+        elements.append(Spacer(1, 0.6 * cm))
+
+        # Gráfico (Top fornecedores)
+        graf = criar_grafico_barras_fornecedores(df_pedidos, doc_width_cm=24, max_itens=8)
+        if graf is not None:
+            elements.append(Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)))
+            elements.append(KeepTogether([graf, Spacer(1, 0.6 * cm)]))
+
+        # Detalhamento com paginação
+        elements.append(PageBreak())
+        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+
+        df_export = preparar_dados_exportacao(df_pedidos)
+        # Colunas padrão
+        colunas_pdf = ['N° OC', 'Departamento', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
+        cols = [c for c in colunas_pdf if c in df_export.columns]
+        df_pdf = df_export[cols].copy()
+
+        # Estilos de parágrafo (quebra de linha)
+        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10)
+        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10)
+
+        # Converter para flowables
+        rows = []
+        for _, r in df_pdf.iterrows():
+            row = []
+            for c in df_pdf.columns:
+                if c == 'Descrição':
+                    row.append(Paragraph(str(r[c]), desc_style))
+                elif c == 'Fornecedor':
+                    row.append(Paragraph(str(r[c]), forn_style))
+                elif c == 'Valor (R$)':
+                    row.append(_safe_money(r[c], formatar_moeda_br))
+                else:
+                    row.append(str(r[c]))
+            rows.append(row)
+
+        df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
+
+        # Paginador (linhas por página)
+        rows_per_page = 18
+        col_widths = [3.0*cm, 3.6*cm, 5.0*cm, 10.5*cm, 3.2*cm, 3.2*cm]
+        atraso_mask = None
+        if 'atrasado' in df_pedidos.columns:
+            # tenta alinhar por índice; fallback sem destaque se não casar
+            try:
+                atraso_mask = df_pedidos['atrasado'].astype(bool).tolist()
+            except Exception:
+                atraso_mask = None
+
+        for page_i, chunk in enumerate(_chunk_df(df_flow, rows_per_page)):
+            if page_i > 0:
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+
+            # máscara do chunk (se existir)
+            mask_chunk = None
+            if atraso_mask is not None and len(atraso_mask) >= (page_i*rows_per_page + len(chunk)):
+                mask_chunk = atraso_mask[page_i*rows_per_page : page_i*rows_per_page + len(chunk)]
+
+            elements.append(_tabela_detalhamento(chunk, col_widths, atraso_mask=mask_chunk))
+            elements.append(Spacer(1, 0.3*cm))
+
+        cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+        doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
+
         buffer.seek(0)
         return buffer
-        
+
     except Exception as e:
         st.error(f"Erro ao gerar PDF: {e}")
         return None
 
 
-def gerar_pdf_executivo_premium(df_pedidos, df_resumo, formatar_moeda_br):
-    """PDF Premium - Relatório Executivo"""
-    
-    if not PDF_DISPONIVEL:
-        return None
-    
-    try:
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=3*cm, bottomMargin=2.5*cm)
-        
-        elements = []
-        styles = getSampleStyleSheet()
-        
-        titulo_style = ParagraphStyle('Titulo', parent=styles['Heading1'], fontSize=24, alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=20)
-        
-        elements.append(Paragraph("Relatório Executivo", titulo_style))
-        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=15))
-        
-        # KPIs
-        total = len(df_pedidos)
-        valor = df_pedidos['valor_total'].sum()
-        taxa = (df_pedidos['entregue'] == True).sum() / total * 100 if total > 0 else 0
-        
-        kpi_dados = [
-            ['INDICADOR', 'VALOR'],
-            ['Total de Pedidos', f'{total:,}'.replace(',', '.')],
-            ['Valor Total', formatar_moeda_br(valor)],
-            ['Taxa de Entrega', f'{taxa:.1f}%'],
-            ['Ticket Médio', formatar_moeda_br(valor / total if total > 0 else 0)]
-        ]
-        
-        elements.append(criar_tabela_kpi(kpi_dados))
-        elements.append(Spacer(1, 1*cm))
-        
-        # Departamentos
-        elements.append(Paragraph("Análise por Departamento", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=16, spaceAfter=10)))
-        
-        dept_dados = [['Departamento', 'Pedidos', 'Valor', 'Taxa (%)']]
-        for _, row in df_resumo.iterrows():
-            dept_dados.append([
-                str(row['Departamento']),
-                str(int(row['Pedidos'])),
-                formatar_moeda_br(row['Valor Total']),
-                f"{row['Taxa (%)']:.1f}%"
-            ])
-        
-        dept_table = Table(dept_dados, colWidths=[6*cm, 3*cm, 4*cm, 3*cm])
-        dept_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')])
-        ]))
-        
-        elements.append(dept_table)
-        
-        cabecalho_rodape = CabecalhoRodape("Relatório Executivo", datetime.now().strftime('%d/%m/%Y'))
-        doc.build(elements, onFirstPage=cabecalho_rodape.cabecalho)
-        
-        buffer.seek(0)
-        return buffer
-        
-    except Exception as e:
-        st.error(f"Erro: {e}")
-        return None
-
-
 def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
-    """PDF Premium - Fornecedor"""
-    
-    if not PDF_DISPONIVEL:
-        return None
-    
-    try:
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=3*cm, bottomMargin=2.5*cm)
-        
-        elements = []
-        styles = getSampleStyleSheet()
-        
-        elements.append(Paragraph(f"Relatório: {fornecedor}", ParagraphStyle('T', parent=styles['Heading1'], fontSize=22, alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=15)))
-        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=15))
-        
-        stats_dados = [
-            ['MÉTRICA', 'VALOR'],
-            ['Pedidos', f'{len(df_fornecedor):,}'.replace(',', '.')],
-            ['Valor Total', formatar_moeda_br(df_fornecedor['valor_total'].sum())],
-            ['Entregues', f"{(df_fornecedor['entregue'] == True).sum():,}".replace(',', '.')],
-            ['Atrasados', f"{(df_fornecedor['atrasado'] == True).sum():,}".replace(',', '.')]
-        ]
-        
-        elements.append(criar_tabela_kpi(stats_dados))
-        elements.append(Spacer(1, 1*cm))
-        
-        df_export = preparar_dados_exportacao(df_fornecedor.head(30))
-        colunas = ['N° OC', 'Departamento', 'Descrição', 'Valor (R$)', 'Status']
-        df_pdf = df_export[[c for c in colunas if c in df_export.columns]]
-        
-        if 'Descrição' in df_pdf.columns:
-            df_pdf['Descrição'] = df_pdf['Descrição'].astype(str).str[:45] + '...'
-        
-        tabela_dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
-        tabela = Table(tabela_dados, colWidths=[4*cm, 4*cm, 10*cm, 4*cm, 3.5*cm])
-        tabela.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')])
-        ]))
-        
-        elements.append(tabela)
-        
-        cabecalho_rodape = CabecalhoRodape(f"Fornecedor: {fornecedor}", datetime.now().strftime('%d/%m/%Y'))
-        doc.build(elements, onFirstPage=cabecalho_rodape.cabecalho)
-        
-        buffer.seek(0)
-        return buffer
-        
-    except Exception as e:
-        st.error(f"Erro: {e}")
-        return None
-
-
-
-def _on_page_completo(cabecalho_rodape):
-    """Retorna callback onPage que desenha cabeçalho + rodapé."""
-    def _on_page(canvas_obj, doc):
-        cabecalho_rodape.cabecalho(canvas_obj, doc)
-        cabecalho_rodape.rodape(canvas_obj, doc)
-    return _on_page
-
-
-def _fmt_valor_pdf(valor, formatar_moeda_br):
-    """Formata valores monetários, evitando 0.0 poluir o relatório."""
-    try:
-        v = float(valor) if valor is not None else 0.0
-    except Exception:
-        return "-"
-    return formatar_moeda_br(v) if v > 0 else "-"
-
-
-def _criar_tabela_pedidos_wrap(df_bloco, styles, formatar_moeda_br):
-    """Cria tabela com quebra de linha (Paragraph) e estilo melhorado."""
-    wrap_style = ParagraphStyle(
-        'Wrap',
-        parent=styles['Normal'],
-        fontSize=8.2,
-        leading=10,
-        textColor=colors.HexColor('#0f172a'),
-    )
-    wrap_style_small = ParagraphStyle(
-        'WrapSmall',
-        parent=styles['Normal'],
-        fontSize=8.0,
-        leading=9.6,
-        textColor=colors.HexColor('#0f172a'),
-    )
-
-    header = ['N° OC', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
-    data = [header]
-
-    # linhas (mantém index começando em 1 para TableStyle)
-    row_atrasado_flags = []
-
-    for _, r in df_bloco.iterrows():
-        data.append([
-            str(r.get('N° OC', '')),
-            Paragraph(str(r.get('Fornecedor', '')).strip(), wrap_style_small),
-            Paragraph(str(r.get('Descrição', '')).strip(), wrap_style),
-            _fmt_valor_pdf(r.get('Valor (R$)', None), formatar_moeda_br),
-            str(r.get('Status', '')).strip(),
-        ])
-        row_atrasado_flags.append(bool(r.get('_atrasado', False)))
-
-    # Larguras pensadas para A4 landscape
-    col_widths = [3.0*cm, 5.3*cm, 10.5*cm, 3.3*cm, 3.0*cm]
-    t = Table(data, colWidths=col_widths, repeatRows=1)
-
-    base = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f2a5a')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 9.5),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('ALIGN', (0, 0), (-1, 0), 'LEFT'),
-        ('ALIGN', (3, 1), (3, -1), 'RIGHT'),
-        ('ALIGN', (4, 1), (4, -1), 'CENTER'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, 0), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-        ('TOPPADDING', (0, 1), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
-        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
-    ]
-
-    # Destaque de atrasados (por linha)
-    for i, atrasado in enumerate(row_atrasado_flags, start=1):
-        if atrasado:
-            base.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fee2e2')))
-
-    t.setStyle(TableStyle(base))
-    return t
-
-
-def _grafico_top_fornecedores(df_dept):
-    """Gera um gráfico simples (barras) com top fornecedores por valor."""
-    # Segurança: pode faltar coluna
-    if 'fornecedor_nome' not in df_dept.columns or 'valor_total' not in df_dept.columns:
-        return None
-
-    top = (df_dept.groupby('fornecedor_nome', dropna=False)['valor_total']
-           .sum()
-           .sort_values(ascending=False)
-           .head(6))
-
-    if top.empty:
-        return None
-
-    labels = [str(x)[:18] + ('…' if len(str(x)) > 18 else '') for x in top.index.tolist()]
-    values = [float(v) if v else 0.0 for v in top.values.tolist()]
-
-    d = Drawing(26*cm, 6.5*cm)
-    chart = VerticalBarChart()
-    chart.x = 0.8*cm
-    chart.y = 0.8*cm
-    chart.height = 5.2*cm
-    chart.width = 24.5*cm
-    chart.data = [values]
-    chart.valueAxis.valueMin = 0
-    chart.valueAxis.visibleTicks = 1
-    chart.valueAxis.labels.fontSize = 7
-    chart.categoryAxis.categoryNames = labels
-    chart.categoryAxis.labels.boxAnchor = 'ne'
-    chart.categoryAxis.labels.angle = 30
-    chart.categoryAxis.labels.fontSize = 7
-
-    d.add(chart)
-    return d
-
-
-def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
-    """PDF Premium - Departamento (V2)
-    Melhorias:
-    - Quebra de linha real (Paragraph) na tabela
-    - Paginação automática (várias páginas) com cabeçalho repetido
-    - Destaque para atrasados
-    - Valores formatados e '0.0' vira '-'
-    - Página 1 com KPIs + gráfico (Top fornecedores)
-    """
+    """PDF Premium - Fornecedor (V3)."""
 
     if not PDF_DISPONIVEL:
         return None
@@ -735,99 +594,180 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         doc = SimpleDocTemplate(
             buffer,
             pagesize=landscape(A4),
-            topMargin=3*cm,
-            bottomMargin=2.5*cm,
-            leftMargin=1.6*cm,
-            rightMargin=1.6*cm
+            **DEFAULT_DOC_KW
         )
 
         elements = []
         styles = getSampleStyleSheet()
 
-        # Título
-        elements.append(
-            Paragraph(
-                f"Departamento: {departamento}",
-                ParagraphStyle(
-                    'T',
-                    parent=styles['Heading1'],
-                    fontSize=22,
-                    alignment=TA_CENTER,
-                    fontName='Helvetica-Bold',
-                    spaceAfter=12
-                )
-            )
-        )
-        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=12))
-
-        # KPIs
-        pedidos = len(df_dept)
-        valor_total = df_dept['valor_total'].sum() if 'valor_total' in df_dept.columns else 0
-        fornecedores = df_dept['fornecedor_nome'].nunique() if 'fornecedor_nome' in df_dept.columns else 0
-        atrasados = (df_dept['atrasado'] == True).sum() if 'atrasado' in df_dept.columns else 0
+        elements.append(Paragraph(f"Relatório: {fornecedor}", ParagraphStyle('T', parent=styles['Heading1'], fontSize=20, alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=10)))
+        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=10))
 
         stats_dados = [
             ['MÉTRICA', 'VALOR'],
-            ['Pedidos', f'{pedidos:,}'.replace(',', '.')],
-            ['Valor Total', formatar_moeda_br(valor_total) if valor_total else formatar_moeda_br(0)],
-            ['Fornecedores', f"{fornecedores:,}".replace(',', '.')],
-            ['Atrasados', f"{atrasados:,}".replace(',', '.')]
+            ['Pedidos', f'{len(df_fornecedor):,}'.replace(',', '.')],
+            ['Valor Total', _safe_money(df_fornecedor['valor_total'].sum() if 'valor_total' in df_fornecedor.columns else 0, formatar_moeda_br)],
+            ['Entregues', f"{(df_fornecedor['entregue'] == True).sum() if 'entregue' in df_fornecedor.columns else 0:,}".replace(',', '.')],
+            ['Atrasados', f"{(df_fornecedor['atrasado'] == True).sum() if 'atrasado' in df_fornecedor.columns else 0:,}".replace(',', '.')],
         ]
         elements.append(criar_tabela_kpi(stats_dados))
-        elements.append(Spacer(1, 0.5*cm))
+        elements.append(Spacer(1, 0.6 * cm))
 
-        # Gráfico Top Fornecedores (opcional)
-        graf = _grafico_top_fornecedores(df_dept)
+        # Gráfico (Top itens por valor dentro do fornecedor) – opcional
+        graf = criar_grafico_barras_fornecedores(df_fornecedor, doc_width_cm=24, max_itens=6)
         if graf is not None:
-            elements.append(Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle(
-                'Sub',
-                parent=styles['Heading2'],
-                fontSize=14,
-                spaceBefore=8,
-                spaceAfter=6
-            )))
-            elements.append(graf)
-            elements.append(Spacer(1, 0.5*cm))
+            elements.append(Paragraph("Top (por valor) dentro do fornecedor", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)))
+            elements.append(KeepTogether([graf, Spacer(1, 0.6 * cm)]))
 
-        # Seção detalhada
-        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle(
-            'Sub2',
-            parent=styles['Heading2'],
-            fontSize=14,
-            spaceBefore=10,
-            spaceAfter=8
-        )))
+        # Detalhamento
+        elements.append(PageBreak())
+        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
 
-        # Prepara dados de tabela (sem truncar)
-        df_export = preparar_dados_exportacao(df_dept).copy()
-        colunas = ['N° OC', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
-        df_pdf = df_export[[c for c in colunas if c in df_export.columns]].copy()
+        df_export = preparar_dados_exportacao(df_fornecedor)
+        colunas = ['N° OC', 'Departamento', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
+        cols = [c for c in colunas if c in df_export.columns]
+        df_pdf = df_export[cols].copy()
 
-        # Flag de atrasado (para destacar linha)
-        if 'atrasado' in df_dept.columns:
-            # alinha pelo index original do df_dept
-            atrasado_series = df_dept['atrasado'].reset_index(drop=True)
-            df_pdf['_atrasado'] = atrasado_series.iloc[:len(df_pdf)].values
-        else:
-            df_pdf['_atrasado'] = False
+        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10)
+        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10)
 
-        # Paginação: número de linhas por página (ajustado para landscape)
-        linhas_por_pagina = 16
+        rows = []
+        for _, r in df_pdf.iterrows():
+            row = []
+            for c in df_pdf.columns:
+                if c == 'Descrição':
+                    row.append(Paragraph(str(r[c]), desc_style))
+                elif c == 'Fornecedor':
+                    row.append(Paragraph(str(r[c]), forn_style))
+                elif c == 'Valor (R$)':
+                    row.append(_safe_money(r[c], formatar_moeda_br))
+                else:
+                    row.append(str(r[c]))
+            rows.append(row)
 
-        for i in range(0, len(df_pdf), linhas_por_pagina):
-            bloco = df_pdf.iloc[i:i+linhas_por_pagina].copy()
-            tabela = _criar_tabela_pedidos_wrap(bloco, styles, formatar_moeda_br)
-            elements.append(tabela)
-            if i + linhas_por_pagina < len(df_pdf):
+        df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
+
+        rows_per_page = 18
+        col_widths = [3.0*cm, 3.6*cm, 5.0*cm, 10.5*cm, 3.2*cm, 3.2*cm]
+
+        atraso_mask = None
+        if 'atrasado' in df_fornecedor.columns:
+            try:
+                atraso_mask = df_fornecedor['atrasado'].astype(bool).tolist()
+            except Exception:
+                atraso_mask = None
+
+        for page_i, chunk in enumerate(_chunk_df(df_flow, rows_per_page)):
+            if page_i > 0:
                 elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-        cabecalho_rodape = CabecalhoRodape(
-            f"Departamento: {departamento}",
-            f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}"
+            mask_chunk = None
+            if atraso_mask is not None and len(atraso_mask) >= (page_i*rows_per_page + len(chunk)):
+                mask_chunk = atraso_mask[page_i*rows_per_page : page_i*rows_per_page + len(chunk)]
+
+            elements.append(_tabela_detalhamento(chunk, col_widths, atraso_mask=mask_chunk))
+            elements.append(Spacer(1, 0.3*cm))
+
+        cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+        doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
+
+        buffer.seek(0)
+        return buffer
+
+    except Exception as e:
+        st.error(f"Erro: {e}")
+        return None
+
+
+def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
+    """PDF Premium - Departamento (V3: anti-sobreposição + paginação)."""
+
+    if not PDF_DISPONIVEL:
+        return None
+
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(A4),
+            **DEFAULT_DOC_KW
         )
-        on_page = _on_page_completo(cabecalho_rodape)
 
-        doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        elements.append(Paragraph(f"Departamento: {departamento}", ParagraphStyle('T', parent=styles['Heading1'], fontSize=20, alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=10)))
+        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=10))
+
+        stats_dados = [
+            ['MÉTRICA', 'VALOR'],
+            ['Pedidos', f'{len(df_dept):,}'.replace(',', '.')],
+            ['Valor Total', _safe_money(df_dept['valor_total'].sum() if 'valor_total' in df_dept.columns else 0, formatar_moeda_br)],
+            ['Fornecedores', f"{df_dept['fornecedor_nome'].nunique() if 'fornecedor_nome' in df_dept.columns else 0:,}".replace(',', '.')],
+            ['Atrasados', f"{(df_dept['atrasado'] == True).sum() if 'atrasado' in df_dept.columns else 0:,}".replace(',', '.')],
+        ]
+        elements.append(criar_tabela_kpi(stats_dados))
+        elements.append(Spacer(1, 0.6 * cm))
+
+        # Gráfico fixo com tamanho previsível + KeepTogether
+        graf = criar_grafico_barras_fornecedores(df_dept, doc_width_cm=24, max_itens=8)
+        if graf is not None:
+            elements.append(Paragraph("Top Fornecedores por Valor (R$)", ParagraphStyle('Sub', parent=styles['Heading2'], fontSize=14, spaceAfter=6)))
+            elements.append(KeepTogether([graf, Spacer(1, 0.4 * cm)]))
+
+        # Começa detalhamento sempre em nova página (evita colidir com gráfico)
+        elements.append(PageBreak())
+        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+
+        df_export = preparar_dados_exportacao(df_dept)
+        colunas = ['N° OC', 'Fornecedor', 'Descrição', 'Valor (R$)', 'Status']
+        cols = [c for c in colunas if c in df_export.columns]
+        df_pdf = df_export[cols].copy()
+
+        desc_style = ParagraphStyle('Desc', parent=styles['BodyText'], fontSize=8, leading=10)
+        forn_style = ParagraphStyle('Forn', parent=styles['BodyText'], fontSize=8, leading=10)
+
+        rows = []
+        for _, r in df_pdf.iterrows():
+            row = []
+            for c in df_pdf.columns:
+                if c == 'Descrição':
+                    row.append(Paragraph(str(r[c]), desc_style))
+                elif c == 'Fornecedor':
+                    row.append(Paragraph(str(r[c]), forn_style))
+                elif c == 'Valor (R$)':
+                    row.append(_safe_money(r[c], formatar_moeda_br))
+                else:
+                    row.append(str(r[c]))
+            rows.append(row)
+
+        df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
+
+        rows_per_page = 18
+        col_widths = [3.0*cm, 6.0*cm, 12.0*cm, 3.4*cm, 3.0*cm]
+
+        atraso_mask = None
+        if 'atrasado' in df_dept.columns:
+            try:
+                atraso_mask = df_dept['atrasado'].astype(bool).tolist()
+            except Exception:
+                atraso_mask = None
+
+        for page_i, chunk in enumerate(_chunk_df(df_flow, rows_per_page)):
+            if page_i > 0:
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+
+            mask_chunk = None
+            if atraso_mask is not None and len(atraso_mask) >= (page_i*rows_per_page + len(chunk)):
+                mask_chunk = atraso_mask[page_i*rows_per_page : page_i*rows_per_page + len(chunk)]
+
+            elements.append(_tabela_detalhamento(chunk, col_widths, atraso_mask=mask_chunk))
+            elements.append(Spacer(1, 0.3*cm))
+
+        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+        doc.build(elements, onFirstPage=cabecalho_rodape.on_page, onLaterPages=cabecalho_rodape.on_page)
 
         buffer.seek(0)
         return buffer
