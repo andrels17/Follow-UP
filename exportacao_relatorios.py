@@ -759,32 +759,32 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
                 atraso_mask = df_pedidos['atrasado'].astype(bool).tolist()
             except Exception:
                 atraso_mask = None
-# Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
-pages = _paginate_rows_by_height(
-    doc=doc,
-    header=df_flow.columns.tolist(),
-    rows=df_flow.values.tolist(),
-    col_widths=col_widths,
-    atraso_mask=atraso_mask,
-    heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
-    min_last_rows=2
-)
+        # Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
+        pages = _paginate_rows_by_height(
+            doc=doc,
+            header=df_flow.columns.tolist(),
+            rows=df_flow.values.tolist(),
+            col_widths=col_widths,
+            atraso_mask=atraso_mask,
+            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
+            min_last_rows=2
+        )
 
-for page_i, (start_i, length_i) in enumerate(pages):
-    if page_i > 0:
-        elements.append(PageBreak())
-        elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+        for page_i, (start_i, length_i) in enumerate(pages):
+            if page_i > 0:
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-    chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
-    mask_chunk = None
-    if atraso_mask is not None:
-        mask_chunk = atraso_mask[start_i:start_i+length_i]
+            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+            mask_chunk = None
+            if atraso_mask is not None:
+                mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-    elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-    elements.append(Spacer(1, 0.3*cm))
+            elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+            elements.append(Spacer(1, 0.3*cm))
 
 
-        cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime(\'%d/%m/%Y às %H:%M\')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
+        cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
 
         buffer.seek(0)
@@ -868,32 +868,32 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
                 atraso_mask = df_fornecedor['atrasado'].astype(bool).tolist()
             except Exception:
                 atraso_mask = None
-# Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
-pages = _paginate_rows_by_height(
-    doc=doc,
-    header=df_flow.columns.tolist(),
-    rows=df_flow.values.tolist(),
-    col_widths=col_widths,
-    atraso_mask=atraso_mask,
-    heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
-    min_last_rows=2
-)
+        # Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
+        pages = _paginate_rows_by_height(
+            doc=doc,
+            header=df_flow.columns.tolist(),
+            rows=df_flow.values.tolist(),
+            col_widths=col_widths,
+            atraso_mask=atraso_mask,
+            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
+            min_last_rows=2
+        )
 
-for page_i, (start_i, length_i) in enumerate(pages):
-    if page_i > 0:
-        elements.append(PageBreak())
-        elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+        for page_i, (start_i, length_i) in enumerate(pages):
+            if page_i > 0:
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-    chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
-    mask_chunk = None
-    if atraso_mask is not None:
-        mask_chunk = atraso_mask[start_i:start_i+length_i]
+            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+            mask_chunk = None
+            if atraso_mask is not None:
+                mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-    elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-    elements.append(Spacer(1, 0.3*cm))
+            elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+            elements.append(Spacer(1, 0.3*cm))
 
 
-        cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime(\'%d/%m/%Y às %H:%M\')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
+        cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
 
         buffer.seek(0)
@@ -977,32 +977,32 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
                 atraso_mask = df_dept['atrasado'].astype(bool).tolist()
             except Exception:
                 atraso_mask = None
-# Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
-pages = _paginate_rows_by_height(
-    doc=doc,
-    header=df_flow.columns.tolist(),
-    rows=df_flow.values.tolist(),
-    col_widths=col_widths,
-    atraso_mask=atraso_mask,
-    heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
-    min_last_rows=2
-)
+        # Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
+        pages = _paginate_rows_by_height(
+            doc=doc,
+            header=df_flow.columns.tolist(),
+            rows=df_flow.values.tolist(),
+            col_widths=col_widths,
+            atraso_mask=atraso_mask,
+            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle('Tmp', parent=styles['Heading2'], fontSize=14)), Spacer(1, 0.4*cm)],
+            min_last_rows=2
+        )
 
-for page_i, (start_i, length_i) in enumerate(pages):
-    if page_i > 0:
-        elements.append(PageBreak())
-        elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+        for page_i, (start_i, length_i) in enumerate(pages):
+            if page_i > 0:
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
 
-    chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
-    mask_chunk = None
-    if atraso_mask is not None:
-        mask_chunk = atraso_mask[start_i:start_i+length_i]
+            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
+            mask_chunk = None
+            if atraso_mask is not None:
+                mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-    elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-    elements.append(Spacer(1, 0.3*cm))
+            elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+            elements.append(Spacer(1, 0.3*cm))
 
 
-        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime(\'%d/%m/%Y às %H:%M\')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
+        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cabecalho_rodape.on_page, onLaterPages=cabecalho_rodape.on_page)
 
         buffer.seek(0)
