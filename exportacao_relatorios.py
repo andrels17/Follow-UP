@@ -636,7 +636,7 @@ def criar_tabela_kpi(dados, cores=True):
 def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
     """Monta tabela com repeatRows e estilo consistente, com destaque opcional para atrasados."""
     dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
-    t = Table(dados, colWidths=col_widths, repeatRows=1, hAlign='LEFT')
+    t = Table(dados, colWidths=col_widths, repeatRows=1, hAlign='LEFT', splitByRow=1)
 
     estilo = [
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
