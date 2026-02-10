@@ -31,6 +31,60 @@ except ImportError:
     st.warning("⚠️ Para exportar em PDF Premium, instale: pip install reportlab")
 
 
+# --- Anti páginas em branco: quebra descrições longas em múltiplas linhas ---
+def _split_text_chunks(text, max_chars=240):
+    if text is None:
+        return [""]
+    s = str(text).strip()
+    if not s:
+        return [""]
+    if len(s) <= max_chars:
+        return [s]
+    chunks = []
+    start = 0
+    while start < len(s):
+        end = min(len(s), start + max_chars)
+        if end < len(s):
+            sp = s.rfind(" ", start, end)
+            if sp > start + int(max_chars * 0.6):
+                end = sp
+        chunks.append(s[start:end].strip())
+        start = end
+    return chunks or [s]
+
+def _expand_rows_for_long_description(rows, header, desc_col='Descrição', max_chars=240, atraso_mask=None):
+    if not rows:
+        return rows, atraso_mask
+    try:
+        desc_idx = header.index(desc_col)
+    except ValueError:
+        return rows, atraso_mask
+
+    expanded = []
+    atraso_exp = [] if atraso_mask is not None else None
+
+    for i, row in enumerate(rows):
+        desc = row[desc_idx]
+        try:
+            desc_txt = desc.getPlainText()
+        except Exception:
+            desc_txt = str(desc)
+
+        parts = _split_text_chunks(desc_txt, max_chars=max_chars)
+
+        for j, part in enumerate(parts):
+            new_row = list(row)
+            if j > 0:
+                for k in range(len(new_row)):
+                    if k != desc_idx:
+                        new_row[k] = ""
+            new_row[desc_idx] = part
+            expanded.append(new_row)
+            if atraso_exp is not None:
+                atraso_exp.append(atraso_mask[i])
+
+    return expanded, atraso_exp
+
 # ============================================
 # FUNÇÕES DE INTERFACE (STREAMLIT)
 # ============================================
@@ -758,6 +812,21 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
 
+
+        # Evita linhas gigantes (descrição longa) que podem causar páginas em branco no ReportLab
+
+        rows_list = df_flow.values.tolist()
+
+        header = df_flow.columns.tolist()
+
+        rows_list, atraso_mask = _expand_rows_for_long_description(
+
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=atraso_mask
+
+        )
+
+        df_flow = pd.DataFrame(rows_list, columns=header)
+
         # Paginador (linhas por página)
         rows_per_page = 18
         col_widths = [3.0*cm, 3.6*cm, 5.0*cm, 10.5*cm, 3.2*cm, 3.2*cm]
@@ -885,6 +954,21 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
 
+
+        # Evita linhas gigantes (descrição longa) que podem causar páginas em branco no ReportLab
+
+        rows_list = df_flow.values.tolist()
+
+        header = df_flow.columns.tolist()
+
+        rows_list, atraso_mask = _expand_rows_for_long_description(
+
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=atraso_mask
+
+        )
+
+        df_flow = pd.DataFrame(rows_list, columns=header)
+
         rows_per_page = 18
         col_widths = [3.0*cm, 3.6*cm, 5.0*cm, 10.5*cm, 3.2*cm, 3.2*cm]
 
@@ -1011,6 +1095,21 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
 
         df_flow = pd.DataFrame(rows, columns=df_pdf.columns)
 
+
+        # Evita linhas gigantes (descrição longa) que podem causar páginas em branco no ReportLab
+
+        rows_list = df_flow.values.tolist()
+
+        header = df_flow.columns.tolist()
+
+        rows_list, atraso_mask = _expand_rows_for_long_description(
+
+            rows_list, header, desc_col='Descrição', max_chars=240, atraso_mask=atraso_mask
+
+        )
+
+        df_flow = pd.DataFrame(rows_list, columns=header)
+
         rows_per_page = 18
         col_widths = [3.0*cm, 6.0*cm, 12.0*cm, 3.4*cm, 3.0*cm]
 
@@ -1070,3 +1169,4 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
     except Exception as e:
         st.error(f"Erro: {e}")
         return None
+
