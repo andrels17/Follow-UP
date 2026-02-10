@@ -781,6 +781,7 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
         )
 
         
+        
         for page_i, (start_i, length_i) in enumerate(pages):
             # Defensivo: nunca cria página (PageBreak) para blocos vazios
             if not length_i or length_i <= 0:
@@ -790,17 +791,23 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             if not chunk_rows:
                 continue
 
-            if page_i > 0:
-                elements.append(PageBreak())
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
-
             mask_chunk = None
             if atraso_mask is not None:
                 mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-            elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-            elements.append(Spacer(1, 0.3*cm))
-
+            if page_i == 0:
+                # Mantém título + primeira tabela juntas para evitar título solitário
+                elements.append(KeepTogether([
+                    Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)),
+                    _build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk),
+                    Spacer(1, 0.3 * cm)
+                ]))
+            else:
+                # Para páginas seguintes, quebra antes e mostra continuação
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+                elements.append(Spacer(1, 0.3 * cm))
 
         cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
@@ -901,6 +908,7 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
         )
 
         
+        
         for page_i, (start_i, length_i) in enumerate(pages):
             # Defensivo: nunca cria página (PageBreak) para blocos vazios
             if not length_i or length_i <= 0:
@@ -910,17 +918,23 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             if not chunk_rows:
                 continue
 
-            if page_i > 0:
-                elements.append(PageBreak())
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
-
             mask_chunk = None
             if atraso_mask is not None:
                 mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-            elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-            elements.append(Spacer(1, 0.3*cm))
-
+            if page_i == 0:
+                # Mantém título + primeira tabela juntas para evitar título solitário
+                elements.append(KeepTogether([
+                    Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)),
+                    _build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk),
+                    Spacer(1, 0.3 * cm)
+                ]))
+            else:
+                # Para páginas seguintes, quebra antes e mostra continuação
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+                elements.append(Spacer(1, 0.3 * cm))
 
         cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
@@ -1021,6 +1035,7 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
         )
 
         
+        
         for page_i, (start_i, length_i) in enumerate(pages):
             # Defensivo: nunca cria página (PageBreak) para blocos vazios
             if not length_i or length_i <= 0:
@@ -1030,19 +1045,26 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             if not chunk_rows:
                 continue
 
-            if page_i > 0:
-                elements.append(PageBreak())
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
-
             mask_chunk = None
             if atraso_mask is not None:
                 mask_chunk = atraso_mask[start_i:start_i+length_i]
 
-            elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-            elements.append(Spacer(1, 0.3*cm))
+            if page_i == 0:
+                # Mantém título + primeira tabela juntas para evitar título solitário
+                elements.append(KeepTogether([
+                    Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)),
+                    _build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk),
+                    Spacer(1, 0.3 * cm)
+                ]))
+            else:
+                # Para páginas seguintes, quebra antes e mostra continuação
+                elements.append(PageBreak())
+                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
+                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
+                elements.append(Spacer(1, 0.3 * cm))
 
 
-        cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
+                cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cabecalho_rodape.on_page, onLaterPages=cabecalho_rodape.on_page)
 
         buffer.seek(0)
