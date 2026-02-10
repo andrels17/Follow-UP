@@ -367,25 +367,30 @@ def criar_tabela_kpi(dados, cores=True):
     tabela = LongTable(tabela_dados, repeatRows=1, colWidths=[...])
     
     estilo = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 13),
-        ('FONTSIZE', (0, 1), (-1, -1), 11),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 12),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 12),
-        ('TOPPADDING', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#cbd5e1')),
+      ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#667eea")),
+      ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+      ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+      ("FONTSIZE", (0,0), (-1,0), 12),
+      ("ALIGN", (1,1), (1,-1), "RIGHT"),
+      ("FONTSIZE", (0,1), (-1,-1), 11),
+      ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.HexColor("#f8fafc"), colors.white]),
+      ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
     ]
     
     if cores:
         estilo.append(('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f8fafc'), colors.white]))
     
-    table.setStyle(TableStyle(estilo))
-    return table
+    table_style = TableStyle([...])  # estilo base
+    
+    # Exemplo: colorir linhas com status
+    status_col = df_pdf.columns.tolist().index("Status")
+    for i, row in enumerate(df_pdf.values.tolist(), start=1):  # start=1 pq header é 0
+        status = str(row[status_col])
+        if "atras" in status.lower():
+            table_style.add("TEXTCOLOR", (0,i), (-1,i), colors.HexColor("#b91c1c"))
+            table_style.add("BACKGROUND", (0,i), (-1,i), colors.HexColor("#fff1f2"))
+    
+    tabela.setStyle(table_style)
 
 def moeda_br(v):
     try:
