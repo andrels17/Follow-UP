@@ -728,6 +728,89 @@ def _paginate_rows_by_height(doc, header, rows, col_widths, atraso_mask=None, he
 
     return pages
 
+def gerar_pdf_executivo_premium(df_pedidos, df_resumo, formatar_moeda_br):
+    """PDF Premium - Relatório Executivo (com margens consistentes e cabeçalho/rodapé)."""
+    if not PDF_DISPONIVEL:
+        return None
+
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, **DEFAULT_DOC_KW)
+
+        elements = []
+        styles = getSampleStyleSheet()
+
+        titulo_style = ParagraphStyle(
+            'TituloExec',
+            parent=styles['Heading1'],
+            fontSize=22,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold',
+            spaceAfter=14
+        )
+
+        elements.append(Paragraph("Relatório Executivo", titulo_style))
+        elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#667eea'), spaceAfter=12))
+
+        # KPIs
+        total = int(len(df_pedidos)) if df_pedidos is not None else 0
+        valor = float(df_pedidos['valor_total'].sum()) if total > 0 and 'valor_total' in df_pedidos.columns else 0.0
+        entregues = int((df_pedidos['entregue'] == True).sum()) if total > 0 and 'entregue' in df_pedidos.columns else 0
+        taxa = (entregues / total * 100) if total > 0 else 0.0
+
+        kpi_dados = [
+            ['INDICADOR', 'VALOR'],
+            ['Total de Pedidos', f'{total:,}'.replace(',', '.')],
+            ['Valor Total', formatar_moeda_br(valor)],
+            ['Taxa de Entrega', f'{taxa:.1f}%'],
+            ['Ticket Médio', formatar_moeda_br(valor / total if total > 0 else 0)]
+        ]
+
+        elements.append(criar_tabela_kpi(kpi_dados))
+        elements.append(Spacer(1, 0.6*cm))
+
+        # Departamentos
+        elements.append(Paragraph("Análise por Departamento", ParagraphStyle('SubExec', parent=styles['Heading2'], fontSize=15, spaceAfter=10)))
+
+        dept_dados = [['Departamento', 'Pedidos', 'Valor', 'Taxa (%)']]
+        if df_resumo is not None and not df_resumo.empty:
+            for _, row in df_resumo.iterrows():
+                dept_dados.append([
+                    str(row.get('Departamento', '')),
+                    str(int(row.get('Pedidos', 0))),
+                    formatar_moeda_br(float(row.get('Valor Total', 0) or 0)),
+                    f"{float(row.get('Taxa (%)', 0) or 0):.1f}%"
+                ])
+
+        dept_table = Table(
+            dept_dados,
+            colWidths=[6*cm, 3*cm, 4*cm, 3*cm],
+            repeatRows=1,
+            hAlign='LEFT',
+            splitByRow=1
+        )
+        dept_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')])
+        ]))
+
+        elements.append(dept_table)
+
+        cab = CabecalhoRodape("Relatório Executivo", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+        doc.build(elements, onFirstPage=cab.cabecalho, onLaterPages=cab.cabecalho)
+
+        buffer.seek(0)
+        return buffer
+
+    except Exception as e:
+        st.error(f"Erro: {e}")
+        return None
+
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
     """PDF Premium - Relatório Completo (V3: paginação, quebra de linha, anti-sobreposição)."""
 
