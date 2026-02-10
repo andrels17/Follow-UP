@@ -360,6 +360,34 @@ class CabecalhoRodape:
         self._draw_footer(canvas_obj)
         canvas_obj.restoreState()
 
+# ============================================
+# HELPERS DE LAYOUT (ANTI-SOBREPOSIÇÃO)
+# ============================================
+
+# Margens padrão (reservam espaço real para cabeçalho/rodapé do CabecalhoRodape)
+DEFAULT_DOC_KW = dict(
+    topMargin=CabecalhoRodape.HEADER_H + 1.0 * cm,
+    bottomMargin=CabecalhoRodape.FOOTER_H + 1.0 * cm,
+    leftMargin=2.0 * cm,
+    rightMargin=2.0 * cm,
+)
+
+def _safe_money(v, formatar_moeda_br):
+    """Formata valores monetários e evita '0.0' poluindo o relatório."""
+    try:
+        if v is None:
+            return "-"
+        fv = float(v)
+        if fv <= 0:
+            return "-"
+        return formatar_moeda_br(fv)
+    except Exception:
+        return "-"
+
+def _chunk_df(df, rows_per_page):
+    for i in range(0, len(df), rows_per_page):
+        yield df.iloc[i:i+rows_per_page]
+
 def criar_tabela_kpi(dados, cores=True):
     """Cria tabela de KPIs estilizada"""
     
@@ -386,85 +414,6 @@ def criar_tabela_kpi(dados, cores=True):
     table.setStyle(TableStyle(estilo))
     return table
 
-
-
-
-def criar_grafico_barras_fornecedores(df, doc_width_cm=24, max_itens=8):
-    """Cria um gráfico de barras (Top fornecedores por valor) com tamanho previsível.
-
-    Retorna um Drawing com altura fixa (evita sobreposição).
-    """
-    try:
-        if df is None or df.empty:
-            return None
-
-        base = df.groupby('fornecedor_nome', dropna=False)['valor_total'].sum().sort_values(ascending=False).head(max_itens)
-        if base.empty:
-            return None
-
-        labels = [str(x)[:18] + ("…" if len(str(x)) > 18 else "") for x in base.index.tolist()]
-        values = [float(v) for v in base.values.tolist()]
-
-        # Dimensões: width baseado no doc, height fixa
-        width = doc_width_cm * cm
-        height = 6.2 * cm
-
-        d = Drawing(width, height)
-        bc = VerticalBarChart()
-        bc.x = 0.9 * cm
-        bc.y = 0.8 * cm
-        bc.width = width - 1.4 * cm
-        bc.height = height - 1.6 * cm
-
-        bc.data = [values]
-        bc.categoryAxis.categoryNames = labels
-        bc.barWidth = 0.35 * cm
-        bc.groupSpacing = 0.35 * cm
-        bc.barSpacing = 0.15 * cm
-
-        # Eixos (fontes menores para caber)
-        bc.valueAxis.labels.fontSize = 7
-        bc.categoryAxis.labels.fontSize = 7
-        bc.categoryAxis.labels.boxAnchor = 'ne'
-        bc.categoryAxis.labels.angle = 35
-
-        # Cores default do reportlab; apenas borda suave
-        bc.strokeColor = colors.HexColor('#94a3b8')
-
-        d.add(bc)
-        return d
-    except Exception:
-        return None
-
-def _tabela_detalhamento(df_pdf, col_widths, atraso_mask=None):
-    """Monta tabela com repeatRows e estilo consistente, com destaque opcional para atrasados."""
-    dados = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
-    t = Table(dados, colWidths=col_widths, repeatRows=1, hAlign='LEFT')
-
-    estilo = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#764ba2')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 9),
-        ('FONTSIZE', (0, 1), (-1, -1), 8),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')]),
-    ]
-
-    # Destaque de atrasados (linha inteira)
-    if atraso_mask is not None:
-        for i, is_atraso in enumerate(atraso_mask, start=1):  # start=1 por causa do header
-            if bool(is_atraso):
-                estilo.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fee2e2')))
-
-    t.setStyle(TableStyle(estilo))
-    return t
 
 def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
     """PDF Premium - Relatório Completo (V3: paginação, quebra de linha, anti-sobreposição)."""
