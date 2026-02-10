@@ -944,44 +944,11 @@ def gerar_pdf_completo_premium(df_pedidos, formatar_moeda_br):
             except Exception:
                 atraso_mask = None
         # Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
-        pages = _paginate_rows_by_height(
-            doc=doc,
-            header=df_flow.columns.tolist(),
-            rows=df_flow.values.tolist(),
-            col_widths=col_widths,
-            atraso_mask=locals().get('atraso_mask'),
-            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
-            min_last_rows=3
-        )
-        # Sanitização extra: evita páginas vazias (defensivo)
-        pages = [(a, b) for (a, b) in pages if b and b > 0]
-
-        
-        
-        for page_i, (start_i, length_i) in enumerate(pages):
-            # Defensivo: nunca cria página (PageBreak) para blocos vazios
-            if not length_i or length_i <= 0:
-                continue
-
-            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
-            if not chunk_rows:
-                continue
-
-            mask_chunk = None
-            if atraso_mask is not None:
-                mask_chunk = atraso_mask[start_i:start_i+length_i]
-
-            if page_i == 0:
-                # Mantém título + primeira tabela juntas para evitar título solitário
-                elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
-                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-                elements.append(Spacer(1, 0.3 * cm))
-            else:
-                # Para páginas seguintes, quebra antes e mostra continuação
-                _safe_page_break(elements)
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
-                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-                elements.append(Spacer(1, 0.3 * cm))
+        # Em vez de paginar manualmente (o que pode deixar páginas com muito espaço sobrando),
+        # deixamos o ReportLab quebrar a tabela naturalmente entre páginas.
+        # repeatRows=1 já repete o cabeçalho e splitByRow=1 permite corte por linha.
+        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+        elements.append(_build_table_from_rows(df_flow.columns.tolist(), df_flow.values.tolist(), col_widths, atraso_mask=atraso_mask))
 
         cab = CabecalhoRodape("Follow-up de Compras", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
@@ -1086,44 +1053,11 @@ def gerar_pdf_fornecedor_premium(df_fornecedor, fornecedor, formatar_moeda_br):
             except Exception:
                 atraso_mask = None
         # Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
-        pages = _paginate_rows_by_height(
-            doc=doc,
-            header=df_flow.columns.tolist(),
-            rows=df_flow.values.tolist(),
-            col_widths=col_widths,
-            atraso_mask=locals().get('atraso_mask'),
-            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
-            min_last_rows=3
-        )
-        # Sanitização extra: evita páginas vazias (defensivo)
-        pages = [(a, b) for (a, b) in pages if b and b > 0]
-
-        
-        
-        for page_i, (start_i, length_i) in enumerate(pages):
-            # Defensivo: nunca cria página (PageBreak) para blocos vazios
-            if not length_i or length_i <= 0:
-                continue
-
-            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
-            if not chunk_rows:
-                continue
-
-            mask_chunk = None
-            if atraso_mask is not None:
-                mask_chunk = atraso_mask[start_i:start_i+length_i]
-
-            if page_i == 0:
-                # Mantém título + primeira tabela juntas para evitar título solitário
-                elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
-                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-                elements.append(Spacer(1, 0.3 * cm))
-            else:
-                # Para páginas seguintes, quebra antes e mostra continuação
-                _safe_page_break(elements)
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
-                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-                elements.append(Spacer(1, 0.3 * cm))
+        # Em vez de paginar manualmente (o que pode deixar páginas com muito espaço sobrando),
+        # deixamos o ReportLab quebrar a tabela naturalmente entre páginas.
+        # repeatRows=1 já repete o cabeçalho e splitByRow=1 permite corte por linha.
+        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+        elements.append(_build_table_from_rows(df_flow.columns.tolist(), df_flow.values.tolist(), col_widths, atraso_mask=atraso_mask))
 
         cab = CabecalhoRodape(f"Fornecedor: {fornecedor}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cab.on_page, onLaterPages=cab.on_page)
@@ -1228,44 +1162,12 @@ def gerar_pdf_departamento_premium(df_dept, departamento, formatar_moeda_br):
             except Exception:
                 atraso_mask = None
         # Paginação inteligente por altura (evita páginas com 1 linha 'perdida')
-        pages = _paginate_rows_by_height(
-            doc=doc,
-            header=df_flow.columns.tolist(),
-            rows=df_flow.values.tolist(),
-            col_widths=col_widths,
-            atraso_mask=locals().get('atraso_mask'),
-            heading_flowables=[Paragraph("Detalhamento de Pedidos", ParagraphStyle("Tmp", parent=styles["Heading2"], fontSize=14, spaceAfter=8)), Spacer(1, 0.4*cm)],
-            min_last_rows=3
-        )
-        # Sanitização extra: evita páginas vazias (defensivo)
-        pages = [(a, b) for (a, b) in pages if b and b > 0]
+        # Em vez de paginar manualmente (o que pode deixar páginas com muito espaço sobrando),
+        # deixamos o ReportLab quebrar a tabela naturalmente entre páginas.
+        # repeatRows=1 já repete o cabeçalho e splitByRow=1 permite corte por linha.
+        elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
+        elements.append(_build_table_from_rows(df_flow.columns.tolist(), df_flow.values.tolist(), col_widths, atraso_mask=atraso_mask))
 
-        
-        
-        for page_i, (start_i, length_i) in enumerate(pages):
-            # Defensivo: nunca cria página (PageBreak) para blocos vazios
-            if not length_i or length_i <= 0:
-                continue
-
-            chunk_rows = df_flow.values.tolist()[start_i:start_i+length_i]
-            if not chunk_rows:
-                continue
-
-            mask_chunk = None
-            if atraso_mask is not None:
-                mask_chunk = atraso_mask[start_i:start_i+length_i]
-
-            if page_i == 0:
-                # Mantém título + primeira tabela juntas para evitar título solitário
-                elements.append(Paragraph("Detalhamento de Pedidos", ParagraphStyle('Sub2', parent=styles['Heading2'], fontSize=14, spaceAfter=8)))
-                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-                elements.append(Spacer(1, 0.3 * cm))
-            else:
-                # Para páginas seguintes, quebra antes e mostra continuação
-                _safe_page_break(elements)
-                elements.append(Paragraph("Detalhamento de Pedidos (continuação)", ParagraphStyle('Sub3', parent=styles['Heading2'], fontSize=12, spaceAfter=8)))
-                elements.append(_build_table_from_rows(df_flow.columns.tolist(), chunk_rows, col_widths, atraso_mask=mask_chunk))
-                elements.append(Spacer(1, 0.3 * cm))
         cabecalho_rodape = CabecalhoRodape(f"Departamento: {departamento}", f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}" + (f" | {subtitulo_periodo}" if "subtitulo_periodo" in locals() and subtitulo_periodo else ""))
         doc.build(elements, onFirstPage=cabecalho_rodape.on_page, onLaterPages=cabecalho_rodape.on_page)
 
