@@ -411,7 +411,7 @@ def criar_card_fornecedor(fornecedor: dict, formatar_moeda_br):
 
 def exibir_alertas_completo(alertas: dict, formatar_moeda_br):
     """Exibe a página completa de alertas com filtros e tabs."""
-    
+
     def safe_text(txt):
         """Previne problemas com HTML e valores None/NaN."""
         if txt is None or (isinstance(txt, float) and pd.isna(txt)):
@@ -419,173 +419,172 @@ def exibir_alertas_completo(alertas: dict, formatar_moeda_br):
         txt_str = str(txt).strip()
         if not txt_str or txt_str.lower() in ["nan", "none", "null"]:
             return "N/A"
-        # Limpar caracteres problemáticos mas manter acentuação
-        txt_str = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]', '', txt_str)
+        txt_str = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]", "", txt_str)
         return html.escape(txt_str)
-    
+
     st.title("🔔 Central de Notificações e Alertas")
 
-st.markdown(
-    """
-    <style>
-      .fu-kpi {
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 14px;
-        padding: 14px 14px;
-        margin-bottom: 6px;
-      }
-      .fu-kpi-title {
-        font-size: 13px;
-        opacity: 0.9;
-        margin: 0 0 6px 0;
-      }
-      .fu-kpi-value {
-        font-size: 30px;
-        font-weight: 800;
-        line-height: 1.1;
-        margin: 0;
-      }
-      .fu-kpi-sub {
-        font-size: 12px;
-        opacity: 0.85;
-        margin: 6px 0 0 0;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-    
-    # Resumo geral no topo (cards com melhor contraste)
-a = len(alertas.get("pedidos_atrasados", []))
-v = len(alertas.get("pedidos_vencendo", []))
-c = len(alertas.get("pedidos_criticos", []))
-f = len(alertas.get("fornecedores_baixa_performance", []))
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
+    # CSS (PRECISA ficar dentro da função)
     st.markdown(
-        f"""
-        <div class="fu-kpi">
-          <p class="fu-kpi-title">⚠️ Atrasados</p>
-          <p class="fu-kpi-value">{a}</p>
-          <p class="fu-kpi-sub">{'⏰ Quanto maior, pior' if a else '✅ Tudo em dia'}</p>
-        </div>
+        """
+        <style>
+          .fu-kpi {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 14px;
+            padding: 14px 14px;
+            margin-bottom: 6px;
+          }
+          .fu-kpi-title {
+            font-size: 13px;
+            opacity: 0.9;
+            margin: 0 0 6px 0;
+          }
+          .fu-kpi-value {
+            font-size: 30px;
+            font-weight: 800;
+            line-height: 1.1;
+            margin: 0;
+          }
+          .fu-kpi-sub {
+            font-size: 12px;
+            opacity: 0.85;
+            margin: 6px 0 0 0;
+          }
+        </style>
         """,
         unsafe_allow_html=True,
     )
 
-with col2:
-    st.markdown(
-        f"""
-        <div class="fu-kpi">
-          <p class="fu-kpi-title">⏰ Vencendo em 3 dias</p>
-          <p class="fu-kpi-value">{v}</p>
-          <p class="fu-kpi-sub">{'⚡ Atenção' if v else '✅ Sem urgências'}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Resumo geral no topo
+    a = len(alertas.get("pedidos_atrasados", []))
+    v = len(alertas.get("pedidos_vencendo", []))
+    c = len(alertas.get("pedidos_criticos", []))
+    f = len(alertas.get("fornecedores_baixa_performance", []))
 
-with col3:
-    st.markdown(
-        f"""
-        <div class="fu-kpi">
-          <p class="fu-kpi-title">🚨 Pedidos Críticos</p>
-          <p class="fu-kpi-value">{c}</p>
-          <p class="fu-kpi-sub">{'💰 Alto valor / urgente' if c else '✅ Ok'}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    col1, col2, col3, col4 = st.columns(4)
 
-with col4:
-    st.markdown(
-        f"""
-        <div class="fu-kpi">
-          <p class="fu-kpi-title">📦 Fornecedores Problema</p>
-          <p class="fu-kpi-value">{f}</p>
-          <p class="fu-kpi-sub">{'📉 Baixa performance' if f else '✅ Ok'}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with col1:
+        st.markdown(
+            f"""
+            <div class="fu-kpi">
+              <p class="fu-kpi-title">⚠️ Atrasados</p>
+              <p class="fu-kpi-value">{a}</p>
+              <p class="fu-kpi-sub">{'⏰ Quanto maior, pior' if a else '✅ Tudo em dia'}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col2:
+        st.markdown(
+            f"""
+            <div class="fu-kpi">
+              <p class="fu-kpi-title">⏰ Vencendo em 3 dias</p>
+              <p class="fu-kpi-value">{v}</p>
+              <p class="fu-kpi-sub">{'⚡ Atenção' if v else '✅ Sem urgências'}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col3:
+        st.markdown(
+            f"""
+            <div class="fu-kpi">
+              <p class="fu-kpi-title">🚨 Pedidos Críticos</p>
+              <p class="fu-kpi-value">{c}</p>
+              <p class="fu-kpi-sub">{'💰 Alto valor / urgente' if c else '✅ Ok'}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col4:
+        st.markdown(
+            f"""
+            <div class="fu-kpi">
+              <p class="fu-kpi-title">📦 Fornecedores Problema</p>
+              <p class="fu-kpi-value">{f}</p>
+              <p class="fu-kpi-sub">{'📉 Baixa performance' if f else '✅ Ok'}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.markdown("---")
-    
-    # Tabs com diferentes tipos de alertas
-    tab1, tab2, tab3, tab4 = st.tabs([
-        f"⚠️ Atrasados ({len(alertas['pedidos_atrasados'])})",
-        f"⏰ Vencendo ({len(alertas['pedidos_vencendo'])})",
-        f"🚨 Críticos ({len(alertas['pedidos_criticos'])})",
-        f"📉 Fornecedores ({len(alertas['fornecedores_baixa_performance'])})"
-    ])
-    
+
+    # Tabs
+    tab1, tab2, tab3, tab4 = st.tabs(
+        [
+            f"⚠️ Atrasados ({len(alertas['pedidos_atrasados'])})",
+            f"⏰ Vencendo ({len(alertas['pedidos_vencendo'])})",
+            f"🚨 Críticos ({len(alertas['pedidos_criticos'])})",
+            f"📉 Fornecedores ({len(alertas['fornecedores_baixa_performance'])})",
+        ]
+    )
+
     # TAB 1: Pedidos Atrasados
     with tab1:
         st.subheader("⚠️ Pedidos Atrasados")
-        
-        if alertas['pedidos_atrasados']:
-            # Extrair departamentos e fornecedores únicos
-            departamentos = sorted(list(set(
-                [safe_text(p.get('departamento', 'N/A')) for p in alertas['pedidos_atrasados']]
-            )))
-            
-            fornecedores = sorted(list(set(
-                [safe_text(p.get('fornecedor', 'N/A')) for p in alertas['pedidos_atrasados']]
-            )))
-            
-            # Filtros
+
+        if alertas["pedidos_atrasados"]:
+            departamentos = sorted(
+                list({safe_text(p.get("departamento", "N/A")) for p in alertas["pedidos_atrasados"]})
+            )
+            fornecedores = sorted(
+                list({safe_text(p.get("fornecedor", "N/A")) for p in alertas["pedidos_atrasados"]})
+            )
+
             col_filtro1, col_filtro2, col_filtro3 = st.columns(3)
-            
+
             with col_filtro1:
                 ordem = st.selectbox(
                     "Ordenar por:",
-                    ["Dias de Atraso (maior primeiro)", "Dias de Atraso (menor primeiro)", 
-                     "Valor (maior primeiro)", "Valor (menor primeiro)"],
-                    key="filtro_atrasados_ordem"
+                    [
+                        "Dias de Atraso (maior primeiro)",
+                        "Dias de Atraso (menor primeiro)",
+                        "Valor (maior primeiro)",
+                        "Valor (menor primeiro)",
+                    ],
+                    key="filtro_atrasados_ordem",
                 )
-            
+
             with col_filtro2:
                 dept_filtro = st.multiselect(
                     "Filtrar por Departamento:",
                     options=departamentos,
                     default=[],
-                    key="filtro_atrasados_dept"
+                    key="filtro_atrasados_dept",
                 )
-            
+
             with col_filtro3:
                 fornecedor_filtro = st.multiselect(
                     "Filtrar por Fornecedor:",
                     options=fornecedores,
                     default=[],
-                    key="filtro_atrasados_fornecedor"
+                    key="filtro_atrasados_fornecedor",
                 )
-            
-            # Aplicar ordenação
+
             if "Dias de Atraso (maior primeiro)" in ordem:
-                pedidos_filtrados = sorted(alertas['pedidos_atrasados'], key=lambda x: x.get('dias_atraso', 0), reverse=True)
+                pedidos_filtrados = sorted(alertas["pedidos_atrasados"], key=lambda x: x.get("dias_atraso", 0), reverse=True)
             elif "Dias de Atraso (menor primeiro)" in ordem:
-                pedidos_filtrados = sorted(alertas['pedidos_atrasados'], key=lambda x: x.get('dias_atraso', 0))
+                pedidos_filtrados = sorted(alertas["pedidos_atrasados"], key=lambda x: x.get("dias_atraso", 0))
             elif "Valor (maior primeiro)" in ordem:
-                pedidos_filtrados = sorted(alertas['pedidos_atrasados'], key=lambda x: x.get('valor', 0), reverse=True)
+                pedidos_filtrados = sorted(alertas["pedidos_atrasados"], key=lambda x: x.get("valor", 0), reverse=True)
             elif "Valor (menor primeiro)" in ordem:
-                pedidos_filtrados = sorted(alertas['pedidos_atrasados'], key=lambda x: x.get('valor', 0))
+                pedidos_filtrados = sorted(alertas["pedidos_atrasados"], key=lambda x: x.get("valor", 0))
             else:
-                pedidos_filtrados = alertas['pedidos_atrasados']
-            
-            # Aplicar filtros de departamento
+                pedidos_filtrados = alertas["pedidos_atrasados"]
+
             if dept_filtro:
-                pedidos_filtrados = [p for p in pedidos_filtrados if safe_text(p.get('departamento', 'N/A')) in dept_filtro]
-            
-            # Aplicar filtros de fornecedor
+                pedidos_filtrados = [p for p in pedidos_filtrados if safe_text(p.get("departamento", "N/A")) in dept_filtro]
+
             if fornecedor_filtro:
-                pedidos_filtrados = [p for p in pedidos_filtrados if safe_text(p.get('fornecedor', 'N/A')) in fornecedor_filtro]
-            
-            # Mostrar contador
+                pedidos_filtrados = [p for p in pedidos_filtrados if safe_text(p.get("fornecedor", "N/A")) in fornecedor_filtro]
+
             st.caption(f"📊 Mostrando {len(pedidos_filtrados)} de {len(alertas['pedidos_atrasados'])} pedidos atrasados")
-            
+
             if pedidos_filtrados:
                 for pedido in pedidos_filtrados:
                     criar_card_pedido(pedido, "atrasado", formatar_moeda_br)
@@ -593,55 +592,54 @@ with col4:
                 st.info("📭 Nenhum pedido atrasado corresponde aos filtros selecionados")
         else:
             st.success("✅ Nenhum pedido atrasado!")
-    
+
     # TAB 2: Pedidos Vencendo
     with tab2:
         st.subheader("⏰ Pedidos Vencendo nos Próximos 3 Dias")
-        
-        if alertas['pedidos_vencendo']:
-            # Extrair fornecedores únicos
-            fornecedores_venc = sorted(list(set(
-                [safe_text(p.get('fornecedor', 'N/A')) for p in alertas['pedidos_vencendo']]
-            )))
-            
-            # Filtros
+
+        if alertas["pedidos_vencendo"]:
+            fornecedores_venc = sorted(
+                list({safe_text(p.get("fornecedor", "N/A")) for p in alertas["pedidos_vencendo"]})
+            )
+
             col_filtro1, col_filtro2 = st.columns(2)
-            
+
             with col_filtro1:
                 ordem_venc = st.selectbox(
                     "Ordenar por:",
-                    ["Dias Restantes (menor primeiro)", "Dias Restantes (maior primeiro)", 
-                     "Valor (maior primeiro)", "Valor (menor primeiro)"],
-                    key="filtro_vencendo_ordem"
+                    [
+                        "Dias Restantes (menor primeiro)",
+                        "Dias Restantes (maior primeiro)",
+                        "Valor (maior primeiro)",
+                        "Valor (menor primeiro)",
+                    ],
+                    key="filtro_vencendo_ordem",
                 )
-            
+
             with col_filtro2:
                 fornecedor_venc_filtro = st.multiselect(
                     "Filtrar por Fornecedor:",
                     options=fornecedores_venc,
                     default=[],
-                    key="filtro_vencendo_fornecedor"
+                    key="filtro_vencendo_fornecedor",
                 )
-            
-            # Aplicar ordenação
+
             if "Dias Restantes (menor primeiro)" in ordem_venc:
-                pedidos_filtrados = sorted(alertas['pedidos_vencendo'], key=lambda x: x.get('dias_restantes', 0))
+                pedidos_filtrados = sorted(alertas["pedidos_vencendo"], key=lambda x: x.get("dias_restantes", 0))
             elif "Dias Restantes (maior primeiro)" in ordem_venc:
-                pedidos_filtrados = sorted(alertas['pedidos_vencendo'], key=lambda x: x.get('dias_restantes', 0), reverse=True)
+                pedidos_filtrados = sorted(alertas["pedidos_vencendo"], key=lambda x: x.get("dias_restantes", 0), reverse=True)
             elif "Valor (maior primeiro)" in ordem_venc:
-                pedidos_filtrados = sorted(alertas['pedidos_vencendo'], key=lambda x: x.get('valor', 0), reverse=True)
+                pedidos_filtrados = sorted(alertas["pedidos_vencendo"], key=lambda x: x.get("valor", 0), reverse=True)
             elif "Valor (menor primeiro)" in ordem_venc:
-                pedidos_filtrados = sorted(alertas['pedidos_vencendo'], key=lambda x: x.get('valor', 0))
+                pedidos_filtrados = sorted(alertas["pedidos_vencendo"], key=lambda x: x.get("valor", 0))
             else:
-                pedidos_filtrados = alertas['pedidos_vencendo']
-            
-            # Aplicar filtros de fornecedor
+                pedidos_filtrados = alertas["pedidos_vencendo"]
+
             if fornecedor_venc_filtro:
-                pedidos_filtrados = [p for p in pedidos_filtrados if safe_text(p.get('fornecedor', 'N/A')) in fornecedor_venc_filtro]
-            
-            # Mostrar contador
+                pedidos_filtrados = [p for p in pedidos_filtrados if safe_text(p.get("fornecedor", "N/A")) in fornecedor_venc_filtro]
+
             st.caption(f"📊 Mostrando {len(pedidos_filtrados)} de {len(alertas['pedidos_vencendo'])} pedidos vencendo")
-            
+
             if pedidos_filtrados:
                 for pedido in pedidos_filtrados:
                     criar_card_pedido(pedido, "vencendo", formatar_moeda_br)
