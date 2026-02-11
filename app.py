@@ -11,7 +11,7 @@ from datetime import datetime
 
 import src.services.sistema_alertas as sa
 import backup_auditoria as ba
-
+from src.repositories.fornecedores import carregar_fornecedores
 from src.core.config import configure_page
 from src.core.db import init_supabase
 from src.core.auth import verificar_autenticacao, exibir_login
