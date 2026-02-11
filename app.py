@@ -283,21 +283,21 @@ def main():
 
         st.markdown("---")
         
-        if st.button("🚪 Sair", use_container_width=True):
-            try:
-                ba.registrar_acao(
-                    st.session_state.usuario,
-                    "Logout",
-                    {"timestamp": datetime.now().isoformat()},
-                    supabase,
-                )
-            except Exception:
-                pass
-            try:
-                del st.session_state.usuario
-            except Exception:
-                pass
-            st.rerun()
+    if st.button("🚪 Sair", use_container_width=True):
+        try:
+            ba.registrar_acao(
+                st.session_state.usuario,
+                "Logout",
+                {"timestamp": datetime.now().isoformat()},
+                supabase,
+            )
+        except Exception:
+            pass
+        try:
+            del st.session_state.usuario
+        except Exception:
+            pass
+        st.rerun()
 
 if __name__ == "__main__":
     main()
