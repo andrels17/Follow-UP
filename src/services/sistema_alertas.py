@@ -137,13 +137,20 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     # 3) Fornecedores com Baixa Performance
     # ============================
     # Taxa de sucesso: entregas no prazo / total (aproximação: entregue sem atraso)
-    if "fornecedor_nome" in df.columns and df["fornecedor_nome"].notna().any():
-        id_col = "id" if "id" in df.columns else df.columns[0]
+# Detectar corretamente a coluna id do pedido
+        id_col = "id"
+        if "id" not in df.columns:
+            if "id_x" in df.columns:
+                id_col = "id_x"
+            else:
+                id_col = df.columns[0]  # fallback seguro
 
         grp = df.groupby("fornecedor_nome", dropna=False).agg(
             total_pedidos=(id_col, "count"),
-            valor_total=("valor_total", "sum") if "valor_total" in df.columns else (id_col, "count")
-        )
+            entregues=("entregue", "sum"),
+            atrasados=("_atrasado", "sum"),
+        ).reset_index()
+
 
         # (entregues - atrasados) aproxima "entregues no prazo"
         grp["taxa_sucesso"] = ((grp["entregues"] - grp["atrasados"]) / grp["total_pedidos"] * 100).fillna(0)
