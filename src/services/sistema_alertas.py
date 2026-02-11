@@ -386,7 +386,7 @@ def exibir_painel_alertas(alertas, formatar_moeda_br, df_pedidos_original=None):
     
     with col4:
         st.metric(
-            "📉 Fornecedores Problema",
+            "📉 Fornecedores problema",
             len(alertas['fornecedores_baixa_performance'])
         )
     
