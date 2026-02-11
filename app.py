@@ -7,7 +7,6 @@ st.set_page_config(
 )
 
 from datetime import datetime
-
 import src.services.sistema_alertas as sa
 import backup_auditoria as ba
 from src.repositories.fornecedores import carregar_fornecedores
