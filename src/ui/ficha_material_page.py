@@ -259,7 +259,7 @@ def exibir_ficha_material(_supabase):
                     st.markdown("---")
 
         # ============================================================
-        # TAB 2: BUSCA POR EQUIPAMENTO
+        # TAB 2: BUSCA POR EQUIPAMENTO (BOXES + FOLLOW-UP)
         # ============================================================
         with tab2:
             st.markdown("### 🔧 Materiais por Equipamento")
@@ -273,6 +273,7 @@ def exibir_ficha_material(_supabase):
                 if not equipamentos_todos:
                     st.warning("⚠️ Nenhum equipamento cadastrado nos pedidos")
                 else:
+                    # Busca rápida de equipamento
                     st.markdown("#### 🔍 Buscar Equipamento")
                     c1, c2 = st.columns([4, 1])
 
@@ -291,12 +292,11 @@ def exibir_ficha_material(_supabase):
                             st.session_state.pop("tipo_busca_ficha", None)
                             st.session_state.pop("equipamento_ctx", None)
                             st.session_state.pop("departamento_ctx", None)
+                            st.session_state.pop("modo_ficha_material", None)
                             st.rerun()
 
                     if busca_equipamento:
-                        equipamentos_filtrados = [
-                            eq for eq in equipamentos_todos if busca_equipamento.upper() in eq.upper()
-                        ]
+                        equipamentos_filtrados = [eq for eq in equipamentos_todos if busca_equipamento.upper() in eq.upper()]
                         if not equipamentos_filtrados:
                             st.warning(f"⚠️ Nenhum equipamento encontrado com '{busca_equipamento}'")
                             equipamentos_filtrados = []
@@ -318,14 +318,14 @@ def exibir_ficha_material(_supabase):
                         df_equipamento = df_pedidos[df_pedidos[col_equip] == equipamento_selecionado].copy()
                         st.markdown("---")
 
+                        # ------------------------------
+                        # Filtros (mantendo o visual de boxes)
+                        # ------------------------------
                         st.markdown("#### 🎛️ Filtros Avançados")
-                        c1, c2, c3 = st.columns(3)
+                        f1, f2, f3, f4 = st.columns([1.4, 1.1, 1.1, 1.4])
 
-                        with c1:
-                            if col_status and col_status in df_equipamento.columns:
-                                status_options = df_equipamento[col_status].dropna().unique().tolist()
-                            else:
-                                status_options = []
+                        with f1:
+                            status_options = df_equipamento[col_status].dropna().unique().tolist() if col_status and col_status in df_equipamento.columns else []
                             status_filtro_eq = st.multiselect(
                                 "📊 Status",
                                 options=status_options,
@@ -333,118 +333,165 @@ def exibir_ficha_material(_supabase):
                                 key="status_eq",
                             )
 
-                        with c2:
+                        with f2:
                             periodo_eq = st.selectbox(
                                 "📅 Período",
                                 ["Todos", "Último mês", "Últimos 3 meses", "Últimos 6 meses", "Último ano"],
                                 key="periodo_eq",
                             )
 
-                        with c3:
+                        with f3:
                             filtro_entrega_eq = st.selectbox(
                                 "🚚 Entrega",
                                 ["Todos", "Apenas Entregues", "Apenas Pendentes"],
                                 key="entrega_eq",
                             )
 
+                        with f4:
+                            only_pend = st.toggle("Somente com pendência", value=False, help="Mostra apenas itens com pendência (follow-up).", key="only_pend_eq")
+
                         df_eq_filtrado = df_equipamento.copy()
 
+                        # Status
                         if status_filtro_eq and col_status:
                             df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_status].isin(status_filtro_eq)]
 
-                        if periodo_eq != "Todos" and col_data:
-                            hoje = datetime.now()
+                        # Período
+                        if periodo_eq != "Todos" and col_data and col_data in df_eq_filtrado.columns:
+                            hoje_dt = datetime.now()
                             if periodo_eq == "Último mês":
-                                data_limite = hoje - pd.DateOffset(months=1)
+                                data_limite = hoje_dt - pd.DateOffset(months=1)
                             elif periodo_eq == "Últimos 3 meses":
-                                data_limite = hoje - pd.DateOffset(months=3)
+                                data_limite = hoje_dt - pd.DateOffset(months=3)
                             elif periodo_eq == "Últimos 6 meses":
-                                data_limite = hoje - pd.DateOffset(months=6)
+                                data_limite = hoje_dt - pd.DateOffset(months=6)
                             else:
-                                data_limite = hoje - pd.DateOffset(years=1)
+                                data_limite = hoje_dt - pd.DateOffset(years=1)
 
                             dt = _safe_datetime_series(df_eq_filtrado[col_data])
                             df_eq_filtrado = df_eq_filtrado[dt >= data_limite]
 
+                        # Entrega
                         if col_entregue and col_entregue in df_eq_filtrado.columns:
                             if filtro_entrega_eq == "Apenas Entregues":
                                 df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_entregue] == True]
                             elif filtro_entrega_eq == "Apenas Pendentes":
                                 df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_entregue] == False]
 
+                        # ------------------------------
+                        # Follow-up: pendência, vencimento, atraso
+                        # ------------------------------
+                        hoje = pd.Timestamp.now().normalize()
+
+                        # Data OC
+                        if col_data and col_data in df_eq_filtrado.columns:
+                            df_eq_filtrado["_data_oc"] = _safe_datetime_series(df_eq_filtrado[col_data])
+                        else:
+                            df_eq_filtrado["_data_oc"] = pd.NaT
+
+                        # Due: previsão > prazo > data_oc + 30d
+                        df_eq_filtrado["_prev"] = _safe_datetime_series(df_eq_filtrado[col_prev]) if col_prev and col_prev in df_eq_filtrado.columns else pd.NaT
+                        df_eq_filtrado["_prazo"] = _safe_datetime_series(df_eq_filtrado[col_prazo]) if col_prazo and col_prazo in df_eq_filtrado.columns else pd.NaT
+                        df_eq_filtrado["_due"] = df_eq_filtrado["_prev"]
+                        df_eq_filtrado.loc[df_eq_filtrado["_due"].isna(), "_due"] = df_eq_filtrado.loc[df_eq_filtrado["_due"].isna(), "_prazo"]
+                        df_eq_filtrado.loc[df_eq_filtrado["_due"].isna(), "_due"] = df_eq_filtrado.loc[df_eq_filtrado["_due"].isna(), "_data_oc"] + pd.Timedelta(days=30)
+
+                        # Pendente: entregue False OU qtde_pendente > 0
+                        pendente_flag = pd.Series([True] * len(df_eq_filtrado), index=df_eq_filtrado.index)
+                        if col_entregue and col_entregue in df_eq_filtrado.columns:
+                            pendente_flag = df_eq_filtrado[col_entregue] != True
+                        if col_qtd_pend and col_qtd_pend in df_eq_filtrado.columns:
+                            qtd_pend = pd.to_numeric(df_eq_filtrado[col_qtd_pend], errors="coerce").fillna(0)
+                            pendente_flag = pendente_flag | (qtd_pend > 0)
+
+                        df_eq_filtrado["_pendente"] = pendente_flag
+                        df_eq_filtrado["_atrasado"] = df_eq_filtrado["_pendente"] & df_eq_filtrado["_due"].notna() & (df_eq_filtrado["_due"] < hoje)
+
+                        # Valor total numérico (corrige "R$ 0,00" quando vem como texto)
+                        if col_total and col_total in df_eq_filtrado.columns:
+                            df_eq_filtrado["_valor_total"] = pd.to_numeric(df_eq_filtrado[col_total], errors="coerce").fillna(0.0)
+                        else:
+                            df_eq_filtrado["_valor_total"] = 0.0
+
+                        # Se o usuário quiser ver só pendências
+                        if only_pend:
+                            df_eq_filtrado = df_eq_filtrado[df_eq_filtrado["_pendente"]]
+
                         st.markdown("---")
 
-                        c1, c2, c3, c4 = st.columns(4)
+                        # ------------------------------
+                        # KPIs (boxes)
+                        # ------------------------------
+                        k1, k2, k3, k4, k5 = st.columns(5)
 
-                        with c1:
-                            st.metric("📦 Total de Pedidos", len(df_eq_filtrado))
+                        k1.metric("📦 Total de Pedidos", int(len(df_eq_filtrado)))
+                        k2.metric("🔧 Materiais Diferentes", int(df_eq_filtrado["descricao"].nunique()) if "descricao" in df_eq_filtrado.columns else 0)
 
-                        with c2:
-                            st.metric(
-                                "🔧 Materiais Diferentes",
-                                int(df_eq_filtrado["descricao"].nunique()) if "descricao" in df_eq_filtrado.columns else 0,
-                            )
+                        valor_total_eq = float(df_eq_filtrado["_valor_total"].sum())
+                        k3.metric("💰 Valor Total", formatar_moeda_br(valor_total_eq))
 
-                        with c3:
-                            valor_total = float(df_eq_filtrado[col_total].sum()) if col_total else 0.0
-                            st.metric("💰 Valor Total", formatar_moeda_br(valor_total))
-
-                        with c4:
-                            if col_entregue:
-                                entregues = int((df_eq_filtrado[col_entregue] == True).sum())
-                                st.metric("✅ Entregues", f"{entregues}/{len(df_eq_filtrado)}")
-                            else:
-                                st.metric("✅ Entregues", "—")
+                        pendentes_eq = int(df_eq_filtrado["_pendente"].sum()) if "_pendente" in df_eq_filtrado.columns else 0
+                        atrasados_eq = int(df_eq_filtrado["_atrasado"].sum()) if "_atrasado" in df_eq_filtrado.columns else 0
+                        k4.metric("⏳ Pendentes", pendentes_eq)
+                        k5.metric("🔴 Atrasados", atrasados_eq)
 
                         st.markdown("---")
 
+                        # ------------------------------
+                        # Lista em boxes (como você gosta)
+                        # ------------------------------
                         if df_eq_filtrado.empty:
                             st.warning("⚠️ Nenhum material encontrado com os filtros aplicados")
                         else:
-                            # Agrupar por código+descrição para evitar ambiguidade
+                            st.markdown(f"#### 📋 Materiais do Equipamento **{equipamento_selecionado}**")
+
+                            # Campo para filtrar materiais dentro do equipamento
+                            filtro_material_txt = st.text_input(
+                                "Filtrar material dentro do equipamento (código ou descrição):",
+                                placeholder="Digite para filtrar…",
+                                key="filtro_material_eq",
+                            ).strip()
+
                             group_cols = ["descricao"]
                             if "cod_material" in df_eq_filtrado.columns:
                                 group_cols = ["cod_material", "descricao"]
 
-                            agg_map = {
-                                "id": "count" if "id" in df_eq_filtrado.columns else "size",
-                            }
-                            if col_total:
-                                agg_map[col_total] = "sum"
-                            if col_qtd:
-                                agg_map[col_qtd] = "sum"
-                            if col_entregue:
-                                agg_map[col_entregue] = lambda x: int((x == True).sum())
-
-                            materiais_equipamento = (
-                                df_eq_filtrado.groupby(group_cols, dropna=False)
-                                .agg(agg_map)
+                            materiais = (
+                                df_eq_filtrado
+                                .groupby(group_cols, dropna=False)
+                                .agg(
+                                    Pedidos=("id", "count") if "id" in df_eq_filtrado.columns else ("descricao", "size"),
+                                    Valor=("_valor_total", "sum"),
+                                    QtdSolic=(col_qtd, "sum") if (col_qtd and col_qtd in df_eq_filtrado.columns) else ("descricao", "size"),
+                                    QtdPend=(col_qtd_pend, "sum") if (col_qtd_pend and col_qtd_pend in df_eq_filtrado.columns) else ("descricao", "size"),
+                                    Pendentes=("_pendente", "sum"),
+                                    Atrasados=("_atrasado", "sum"),
+                                    Entregues=(col_entregue, lambda x: int((x == True).sum())) if (col_entregue and col_entregue in df_eq_filtrado.columns) else ("descricao", "size"),
+                                )
                                 .reset_index()
                             )
 
-                            # Renomear colunas
-                            rename_map = {}
-                            if "id" in materiais_equipamento.columns:
-                                rename_map["id"] = "Pedidos"
-                            else:
-                                rename_map["size"] = "Pedidos"
-                            if col_total:
-                                rename_map[col_total] = "Valor Total"
-                            if col_qtd:
-                                rename_map[col_qtd] = "Qtd Total"
-                            if col_entregue:
-                                rename_map[col_entregue] = "Entregues"
+                            # Normalizar números
+                            materiais["Valor"] = pd.to_numeric(materiais["Valor"], errors="coerce").fillna(0.0)
+                            if "QtdPend" in materiais.columns:
+                                materiais["QtdPend"] = pd.to_numeric(materiais["QtdPend"], errors="coerce").fillna(0.0)
 
-                            materiais_equipamento = materiais_equipamento.rename(columns=rename_map)
-                            if "Pedidos" in materiais_equipamento.columns:
-                                materiais_equipamento = materiais_equipamento.sort_values("Pedidos", ascending=False)
+                            # Filtro textual interno
+                            if filtro_material_txt:
+                                mask = materiais["descricao"].astype(str).str.contains(filtro_material_txt, case=False, na=False)
+                                if "cod_material" in materiais.columns:
+                                    mask = mask | materiais["cod_material"].astype(str).str.contains(filtro_material_txt, case=False, na=False)
+                                materiais = materiais[mask]
 
-                            st.markdown(f"#### 📋 Materiais do Equipamento **{equipamento_selecionado}**")
-                            st.caption(f"Mostrando {len(materiais_equipamento)} material(is) • {len(df_eq_filtrado)} pedido(s)")
+                            materiais = materiais.sort_values(["Atrasados", "Pendentes", "Valor", "Pedidos"], ascending=[False, False, False, False])
 
-                            for idx, row in materiais_equipamento.iterrows():
+                            st.caption(f"Mostrando {len(materiais)} material(is) • {len(df_eq_filtrado)} pedido(s) • Critério: atrasados → pendentes → valor")
+
+                            max_rows = st.selectbox("Mostrar", [10, 20, 50, 100], index=1, key="limite_eq_boxes")
+                            for idx, row in materiais.head(int(max_rows)).iterrows():
                                 cols = st.columns([3, 1, 1, 1, 1])
-                                cod = row.get("cod_material") if "cod_material" in materiais_equipamento.columns else None
+
+                                cod = row.get("cod_material") if "cod_material" in materiais.columns else None
                                 desc = row.get("descricao", "")
 
                                 with cols[0]:
@@ -453,18 +500,23 @@ def exibir_ficha_material(_supabase):
                                         titulo = f"{desc}  ·  ({cod})"
                                     st.markdown(f"**{titulo}**")
 
+                                    # Chips estilo ERP
+                                    chips = []
+                                    if int(row.get("Atrasados", 0)) > 0:
+                                        chips.append("🔴 Atrasado")
+                                    if int(row.get("Pendentes", 0)) > 0:
+                                        chips.append("⏳ Pendente")
+                                    if chips:
+                                        st.caption(" • ".join(chips))
+
                                 with cols[1]:
                                     st.metric("Pedidos", int(row.get("Pedidos", 0)))
 
                                 with cols[2]:
-                                    vt = float(row.get("Valor Total", 0.0)) if "Valor Total" in row else 0.0
-                                    st.metric("Valor", formatar_moeda_br(vt))
+                                    st.metric("Pend.", int(row.get("Pendentes", 0)))
 
                                 with cols[3]:
-                                    if "Entregues" in row and "Pedidos" in row:
-                                        st.metric("Entregues", f"{int(row.get('Entregues', 0))}/{int(row.get('Pedidos', 0))}")
-                                    else:
-                                        st.metric("Entregues", "—")
+                                    st.metric("Valor", formatar_moeda_br(float(row.get("Valor", 0.0))))
 
                                 with cols[4]:
                                     if st.button("Ver Ficha", key=f"eq_{idx}"):
@@ -478,7 +530,7 @@ def exibir_ficha_material(_supabase):
                                 st.markdown("---")
 
         # ============================================================
-        # TAB 3: BUSCA POR DEPARTAMENTO
+        # TAB 3: BUSCA POR DEPARTAMENTO (BOXES + FOLLOW-UP)
         # ============================================================
         with tab3:
             st.markdown("### 🏢 Materiais por Departamento")
@@ -509,6 +561,7 @@ def exibir_ficha_material(_supabase):
                             st.session_state.pop("tipo_busca_ficha", None)
                             st.session_state.pop("equipamento_ctx", None)
                             st.session_state.pop("departamento_ctx", None)
+                            st.session_state.pop("modo_ficha_material", None)
                             st.rerun()
 
                     if departamento_selecionado:
@@ -516,13 +569,10 @@ def exibir_ficha_material(_supabase):
                         st.markdown("---")
 
                         st.markdown("#### 🎛️ Filtros Avançados")
-                        c1, c2, c3, c4 = st.columns(4)
+                        f1, f2, f3, f4, f5 = st.columns([1.4, 1.1, 1.1, 1.2, 1.4])
 
-                        with c1:
-                            if col_status and col_status in df_departamento.columns:
-                                status_options_dep = df_departamento[col_status].dropna().unique().tolist()
-                            else:
-                                status_options_dep = []
+                        with f1:
+                            status_options_dep = df_departamento[col_status].dropna().unique().tolist() if col_status and col_status in df_departamento.columns else []
                             status_filtro_dep = st.multiselect(
                                 "📊 Status",
                                 options=status_options_dep,
@@ -530,48 +580,46 @@ def exibir_ficha_material(_supabase):
                                 key="status_dep",
                             )
 
-                        with c2:
+                        with f2:
                             periodo_dep = st.selectbox(
                                 "📅 Período",
                                 ["Todos", "Último mês", "Últimos 3 meses", "Últimos 6 meses", "Último ano"],
                                 key="periodo_dep",
                             )
 
-                        with c3:
+                        with f3:
                             filtro_entrega_dep = st.selectbox(
                                 "🚚 Entrega",
                                 ["Todos", "Apenas Entregues", "Apenas Pendentes"],
                                 key="entrega_dep",
                             )
 
-                        with c4:
+                        with f4:
+                            # Filtro de equipamento dentro do depto (se existir)
                             if col_equip and col_equip in df_departamento.columns:
-                                equipamentos_dep = ["Todos"] + sorted(
-                                    df_departamento[col_equip].dropna().astype(str).unique().tolist()
-                                )
+                                equipamentos_dep = ["Todos"] + sorted(df_departamento[col_equip].dropna().astype(str).unique().tolist())
                             else:
                                 equipamentos_dep = ["Todos"]
-                            filtro_equipamento_dep = st.selectbox(
-                                "🔧 Equipamento",
-                                options=equipamentos_dep,
-                                key="equipamento_dep",
-                            )
+                            filtro_equipamento_dep = st.selectbox("🔧 Equipamento", options=equipamentos_dep, key="equipamento_dep")
+
+                        with f5:
+                            only_pend_dep = st.toggle("Somente com pendência", value=False, help="Mostra apenas itens com pendência (follow-up).", key="only_pend_dep")
 
                         df_dep_filtrado = df_departamento.copy()
 
                         if status_filtro_dep and col_status:
                             df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_status].isin(status_filtro_dep)]
 
-                        if periodo_dep != "Todos" and col_data:
-                            hoje = datetime.now()
+                        if periodo_dep != "Todos" and col_data and col_data in df_dep_filtrado.columns:
+                            hoje_dt = datetime.now()
                             if periodo_dep == "Último mês":
-                                data_limite = hoje - pd.DateOffset(months=1)
+                                data_limite = hoje_dt - pd.DateOffset(months=1)
                             elif periodo_dep == "Últimos 3 meses":
-                                data_limite = hoje - pd.DateOffset(months=3)
+                                data_limite = hoje_dt - pd.DateOffset(months=3)
                             elif periodo_dep == "Últimos 6 meses":
-                                data_limite = hoje - pd.DateOffset(months=6)
+                                data_limite = hoje_dt - pd.DateOffset(months=6)
                             else:
-                                data_limite = hoje - pd.DateOffset(years=1)
+                                data_limite = hoje_dt - pd.DateOffset(years=1)
 
                             dt = _safe_datetime_series(df_dep_filtrado[col_data])
                             df_dep_filtrado = df_dep_filtrado[dt >= data_limite]
@@ -582,84 +630,105 @@ def exibir_ficha_material(_supabase):
                             elif filtro_entrega_dep == "Apenas Pendentes":
                                 df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_entregue] == False]
 
-                        if filtro_equipamento_dep != "Todos" and col_equip:
-                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_equip] == filtro_equipamento_dep]
+                        if filtro_equipamento_dep != "Todos" and col_equip and col_equip in df_dep_filtrado.columns:
+                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_equip].astype(str) == str(filtro_equipamento_dep)]
+
+                        # ------------------------------
+                        # Follow-up: pendência, vencimento, atraso
+                        # ------------------------------
+                        hoje = pd.Timestamp.now().normalize()
+
+                        if col_data and col_data in df_dep_filtrado.columns:
+                            df_dep_filtrado["_data_oc"] = _safe_datetime_series(df_dep_filtrado[col_data])
+                        else:
+                            df_dep_filtrado["_data_oc"] = pd.NaT
+
+                        df_dep_filtrado["_prev"] = _safe_datetime_series(df_dep_filtrado[col_prev]) if col_prev and col_prev in df_dep_filtrado.columns else pd.NaT
+                        df_dep_filtrado["_prazo"] = _safe_datetime_series(df_dep_filtrado[col_prazo]) if col_prazo and col_prazo in df_dep_filtrado.columns else pd.NaT
+                        df_dep_filtrado["_due"] = df_dep_filtrado["_prev"]
+                        df_dep_filtrado.loc[df_dep_filtrado["_due"].isna(), "_due"] = df_dep_filtrado.loc[df_dep_filtrado["_due"].isna(), "_prazo"]
+                        df_dep_filtrado.loc[df_dep_filtrado["_due"].isna(), "_due"] = df_dep_filtrado.loc[df_dep_filtrado["_due"].isna(), "_data_oc"] + pd.Timedelta(days=30)
+
+                        pendente_flag = pd.Series([True] * len(df_dep_filtrado), index=df_dep_filtrado.index)
+                        if col_entregue and col_entregue in df_dep_filtrado.columns:
+                            pendente_flag = df_dep_filtrado[col_entregue] != True
+                        if col_qtd_pend and col_qtd_pend in df_dep_filtrado.columns:
+                            qtd_pend = pd.to_numeric(df_dep_filtrado[col_qtd_pend], errors="coerce").fillna(0)
+                            pendente_flag = pendente_flag | (qtd_pend > 0)
+
+                        df_dep_filtrado["_pendente"] = pendente_flag
+                        df_dep_filtrado["_atrasado"] = df_dep_filtrado["_pendente"] & df_dep_filtrado["_due"].notna() & (df_dep_filtrado["_due"] < hoje)
+
+                        if col_total and col_total in df_dep_filtrado.columns:
+                            df_dep_filtrado["_valor_total"] = pd.to_numeric(df_dep_filtrado[col_total], errors="coerce").fillna(0.0)
+                        else:
+                            df_dep_filtrado["_valor_total"] = 0.0
+
+                        if only_pend_dep:
+                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado["_pendente"]]
 
                         st.markdown("---")
 
-                        c1, c2, c3, c4 = st.columns(4)
+                        # KPIs (boxes)
+                        k1, k2, k3, k4, k5 = st.columns(5)
+                        k1.metric("📦 Pedidos", int(len(df_dep_filtrado)))
+                        k2.metric("🔧 Materiais", int(df_dep_filtrado["descricao"].nunique()) if "descricao" in df_dep_filtrado.columns else 0)
 
-                        with c1:
-                            st.metric("📦 Total de Pedidos", len(df_dep_filtrado))
+                        valor_total_dep = float(df_dep_filtrado["_valor_total"].sum())
+                        k3.metric("💰 Valor Total", formatar_moeda_br(valor_total_dep))
 
-                        with c2:
-                            st.metric(
-                                "🔧 Materiais Diferentes",
-                                int(df_dep_filtrado["descricao"].nunique()) if "descricao" in df_dep_filtrado.columns else 0,
-                            )
-
-                        with c3:
-                            valor_total = float(df_dep_filtrado[col_total].sum()) if col_total else 0.0
-                            st.metric("💰 Valor Total", formatar_moeda_br(valor_total))
-
-                        with c4:
-                            equipamentos_unicos = int(df_dep_filtrado[col_equip].nunique()) if col_equip else 0
-                            st.metric("⚙️ Equipamentos", equipamentos_unicos)
+                        pendentes_dep = int(df_dep_filtrado["_pendente"].sum()) if "_pendente" in df_dep_filtrado.columns else 0
+                        atrasados_dep = int(df_dep_filtrado["_atrasado"].sum()) if "_atrasado" in df_dep_filtrado.columns else 0
+                        k4.metric("⏳ Pendentes", pendentes_dep)
+                        k5.metric("🔴 Atrasados", atrasados_dep)
 
                         st.markdown("---")
 
                         if df_dep_filtrado.empty:
                             st.warning("⚠️ Nenhum material encontrado com os filtros aplicados")
                         else:
+                            st.markdown(f"#### 📋 Materiais do Departamento **{departamento_selecionado}**")
+
+                            filtro_material_txt = st.text_input(
+                                "Filtrar material dentro do departamento (código ou descrição):",
+                                placeholder="Digite para filtrar…",
+                                key="filtro_material_dep",
+                            ).strip()
+
                             group_cols = ["descricao"]
                             if "cod_material" in df_dep_filtrado.columns:
                                 group_cols = ["cod_material", "descricao"]
 
-                            agg_map = {
-                                "id": "count" if "id" in df_dep_filtrado.columns else "size",
-                            }
-                            if col_total:
-                                agg_map[col_total] = "sum"
-                            if col_qtd:
-                                agg_map[col_qtd] = "sum"
-                            if col_equip:
-                                agg_map[col_equip] = "nunique"
-                            if col_entregue:
-                                agg_map[col_entregue] = lambda x: int((x == True).sum())
-
-                            materiais_departamento = (
-                                df_dep_filtrado.groupby(group_cols, dropna=False)
-                                .agg(agg_map)
+                            materiais = (
+                                df_dep_filtrado
+                                .groupby(group_cols, dropna=False)
+                                .agg(
+                                    Pedidos=("id", "count") if "id" in df_dep_filtrado.columns else ("descricao", "size"),
+                                    Valor=("_valor_total", "sum"),
+                                    Equipamentos=(col_equip, "nunique") if (col_equip and col_equip in df_dep_filtrado.columns) else ("descricao", "size"),
+                                    Pendentes=("_pendente", "sum"),
+                                    Atrasados=("_atrasado", "sum"),
+                                )
                                 .reset_index()
                             )
 
-                            rename_map = {}
-                            if "id" in materiais_departamento.columns:
-                                rename_map["id"] = "Pedidos"
-                            else:
-                                rename_map["size"] = "Pedidos"
-                            if col_total:
-                                rename_map[col_total] = "Valor Total"
-                            if col_qtd:
-                                rename_map[col_qtd] = "Qtd Total"
-                            if col_equip:
-                                rename_map[col_equip] = "Equipamentos"
-                            if col_entregue:
-                                rename_map[col_entregue] = "Entregues"
+                            materiais["Valor"] = pd.to_numeric(materiais["Valor"], errors="coerce").fillna(0.0)
 
-                            materiais_departamento = materiais_departamento.rename(columns=rename_map)
-                            if "Pedidos" in materiais_departamento.columns:
-                                materiais_departamento = materiais_departamento.sort_values("Pedidos", ascending=False)
+                            if filtro_material_txt:
+                                mask = materiais["descricao"].astype(str).str.contains(filtro_material_txt, case=False, na=False)
+                                if "cod_material" in materiais.columns:
+                                    mask = mask | materiais["cod_material"].astype(str).str.contains(filtro_material_txt, case=False, na=False)
+                                materiais = materiais[mask]
 
-                            st.markdown(f"#### 📋 Materiais do Departamento **{departamento_selecionado}**")
-                            st.caption(
-                                f"Mostrando {len(materiais_departamento)} material(is) • {len(df_dep_filtrado)} pedido(s)"
-                            )
+                            materiais = materiais.sort_values(["Atrasados", "Pendentes", "Valor", "Pedidos"], ascending=[False, False, False, False])
 
-                            for idx, row in materiais_departamento.iterrows():
+                            st.caption(f"Mostrando {len(materiais)} material(is) • {len(df_dep_filtrado)} pedido(s) • Critério: atrasados → pendentes → valor")
+
+                            max_rows = st.selectbox("Mostrar", [10, 20, 50, 100], index=1, key="limite_dep_boxes")
+                            for idx, row in materiais.head(int(max_rows)).iterrows():
                                 cols = st.columns([3, 1, 1, 1, 1, 1])
 
-                                cod = row.get("cod_material") if "cod_material" in materiais_departamento.columns else None
+                                cod = row.get("cod_material") if "cod_material" in materiais.columns else None
                                 desc = row.get("descricao", "")
 
                                 with cols[0]:
@@ -668,21 +737,25 @@ def exibir_ficha_material(_supabase):
                                         titulo = f"{desc}  ·  ({cod})"
                                     st.markdown(f"**{titulo}**")
 
+                                    chips = []
+                                    if int(row.get("Atrasados", 0)) > 0:
+                                        chips.append("🔴 Atrasado")
+                                    if int(row.get("Pendentes", 0)) > 0:
+                                        chips.append("⏳ Pendente")
+                                    if chips:
+                                        st.caption(" • ".join(chips))
+
                                 with cols[1]:
                                     st.metric("Pedidos", int(row.get("Pedidos", 0)))
 
                                 with cols[2]:
-                                    vt = float(row.get("Valor Total", 0.0)) if "Valor Total" in row else 0.0
-                                    st.metric("Valor", formatar_moeda_br(vt))
-
-                                with cols[3]:
                                     st.metric("Equip.", int(row.get("Equipamentos", 0)) if "Equipamentos" in row else 0)
 
+                                with cols[3]:
+                                    st.metric("Pend.", int(row.get("Pendentes", 0)))
+
                                 with cols[4]:
-                                    if "Entregues" in row and "Pedidos" in row:
-                                        st.metric("Entregues", f"{int(row.get('Entregues', 0))}/{int(row.get('Pedidos', 0))}")
-                                    else:
-                                        st.metric("Entregues", "—")
+                                    st.metric("Valor", formatar_moeda_br(float(row.get("Valor", 0.0))))
 
                                 with cols[5]:
                                     if st.button("Ver Ficha", key=f"dep_{idx}"):
@@ -696,6 +769,7 @@ def exibir_ficha_material(_supabase):
                                         st.rerun()
 
                                 st.markdown("---")
+
 
 
     # ============================================================
