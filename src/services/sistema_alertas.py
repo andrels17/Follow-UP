@@ -261,33 +261,28 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     return alertas
 
 def exibir_badge_alertas(alertas: dict):
-    """
-    Exibe badge compacto de alertas na sidebar.
-    """
-
     total = alertas.get("total", 0)
 
     if total == 0:
-        st.success("✅ Nenhum alerta pendente")
         return
 
     st.markdown(
-    f"""
-    <div style="
-        background: rgba(245, 158, 11, 0.18);
-        border: 1px solid rgba(245, 158, 11, 0.35);
-        color: #fbbf24;
-        padding: 10px 12px;
-        border-radius: 12px;
-        text-align: center;
-        font-weight: 700;
-        letter-spacing: .2px;
-    ">
-        🔔 {total} alerta(s) pendente(s)
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        f"""
+        <div style="
+            background: linear-gradient(135deg,#7c3aed,#2563eb);
+            padding: 12px;
+            border-radius: 12px;
+            text-align: center;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        ">
+            🔔 {total} Alertas Pendentes
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def exibir_painel_alertas(alertas: dict, formatar_moeda_br):
     """Alias para compatibilidade com o app.py."""
