@@ -603,8 +603,77 @@ def exibir_gestao_pedidos(_supabase):
                         progress_bar = st.progress(0)
                         status_txt = st.empty()
 
+                        
+                        registros_pulados_dup = 0
+
+                        # Prefetch para idempotência (OC > Solicitação)
+                        oc_to_id: dict[str, str] = {}
+                        sol_to_id_sem_oc: dict[str, str] = {}
+                        sol_com_oc: set[str] = set()
+
+                        # 1) OCs existentes no banco (para update/pulo)
+                        if "nr_oc" in df_norm.columns:
+                            ocs = df_norm["nr_oc"].dropna().astype(str).str.strip()
+                            ocs = [x for x in ocs.tolist() if x]
+                            if ocs:
+                                try:
+                                    res_oc = _supabase.table("pedidos").select("id,nr_oc").in_("nr_oc", ocs).execute()
+                                    for r in (res_oc.data or []):
+                                        nr_oc_db = str(r.get("nr_oc") or "").strip()
+                                        if nr_oc_db:
+                                            oc_to_id[nr_oc_db] = str(r.get("id"))
+                                except Exception:
+                                    oc_to_id = {}
+
+                        # 2) Solicitações existentes (somente para linhas sem OC)
+                        if "nr_solicitacao" in df_norm.columns:
+                            mask_sem_oc = df_norm.get("nr_oc", "").fillna("").astype(str).str.strip().eq("")
+                            sols = df_norm.loc[mask_sem_oc, "nr_solicitacao"].dropna().astype(str).str.strip()
+                            sols = [x for x in sols.tolist() if x]
+                            if sols:
+                                try:
+                                    res_sol = _supabase.table("pedidos").select("id,nr_solicitacao,nr_oc").in_("nr_solicitacao", sols).execute()
+                                    for r in (res_sol.data or []):
+                                        sol_db = str(r.get("nr_solicitacao") or "").strip()
+                                        oc_db = str(r.get("nr_oc") or "").strip()
+                                        if not sol_db:
+                                            continue
+                                        if oc_db:
+                                            sol_com_oc.add(sol_db)
+                                        else:
+                                            sol_to_id_sem_oc[sol_db] = str(r.get("id"))
+                                except Exception:
+                                    sol_to_id_sem_oc = {}
+                                    sol_com_oc = set()
+
                         for idx, row in df_norm.iterrows():
                             try:
+                                # Idempotência inteligente:
+                                # - Se tiver nr_oc e já existir: atualiza
+                                # - Se NÃO tiver nr_oc e tiver nr_solicitacao:
+                                #     * se solicitação já tem OC no banco: pula (não sobrescreve)
+                                #     * se solicitação existir sem OC: atualiza
+                                pedido_id_existente = None
+
+                                if modo_importacao == "Adicionar novos pedidos":
+                                    nr_oc_row = str(row.get("nr_oc") or "").strip()
+                                    nr_sol_row = str(row.get("nr_solicitacao") or "").strip()
+
+                                    if nr_oc_row and nr_oc_row in oc_to_id:
+                                        pedido_id_existente = oc_to_id[nr_oc_row]
+                                    elif (not nr_oc_row) and nr_sol_row:
+                                        if nr_sol_row in sol_com_oc:
+                                            avisos.append(
+                                                f"Linha {idx + 2}: Solicitação {nr_sol_row} já possui OC no banco — ignorado para evitar sobrescrita"
+                                            )
+                                            registros_pulados_dup += 1
+                                            registros_processados += 1
+                                            if total_rows and (registros_processados % 10 == 0 or registros_processados == total_rows):
+                                                progress_bar.progress(min(1.0, registros_processados / total_rows))
+                                                status_txt.caption(f"Processando {registros_processados}/{total_rows}...")
+                                            continue
+                                        if nr_sol_row in sol_to_id_sem_oc:
+                                            pedido_id_existente = sol_to_id_sem_oc[nr_sol_row]
                                 fornecedor_id = None
 
                                 if "cod_fornecedor" in row and pd.notna(row["cod_fornecedor"]):
@@ -728,7 +797,6 @@ def exibir_gestao_pedidos(_supabase):
                                     pedido_data["criado_por"] = st.session_state.usuario["id"]
                                     _supabase.table("pedidos").insert(pedido_data).execute()
                                     registros_inseridos += 1
-
                                 registros_processados += 1
                                 if total_rows and (registros_processados % 10 == 0 or registros_processados == total_rows):
                                     progress_bar.progress(min(1.0, registros_processados / total_rows))
@@ -748,6 +816,7 @@ def exibir_gestao_pedidos(_supabase):
 - ➕ Inseridos: {registros_inseridos}
 - 🔄 Atualizados: {registros_atualizados}
 - 🏭 Fornecedores criados: {fornecedores_criados}
+- ⛔ Duplicados (OC) pulados: {registros_pulados_dup}
 """
                             )
                         else:
@@ -758,6 +827,7 @@ def exibir_gestao_pedidos(_supabase):
 - ➕ Inseridos: {registros_inseridos}
 - 🔄 Atualizados: {registros_atualizados}
 - 🏭 Fornecedores criados: {fornecedores_criados}
+- ⛔ Duplicados (OC) pulados: {registros_pulados_dup}
 - ❌ Erros: {registros_erro}
 """
                             )
