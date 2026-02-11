@@ -35,7 +35,7 @@ def main():
         exibir_login(supabase)
         return
 
-    # Carregar dados para alertas
+    
     df_pedidos = carregar_pedidos(supabase)
     df_fornecedores = carregar_fornecedores(supabase)
     
