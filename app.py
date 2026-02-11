@@ -44,22 +44,16 @@ def main():
 
 
     # Sidebar com informações do usuário
-    st.markdown(f"""
-        <div style="
-            background-color:#1f2937;
-            padding:12px;
-            border-radius:10px;
-            margin-bottom:10px;
-        ">
-            <div style="font-size:13px;opacity:0.8;">👤 Usuário</div>
-            <div style="font-weight:600;font-size:16px;">
-                {st.session_state.usuario['nome']}
-            </div>
-            <div style="font-size:12px;opacity:0.7;">
-                {st.session_state.usuario['perfil'].title()}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    with st.sidebar:
+        st.markdown(
+            f"""
+        ### 👤 Bem-vindo(a)!
+        **{st.session_state.usuario['nome']}**  
+        *{st.session_state.usuario['perfil'].title()}*
+        """
+        )
+
+        st.markdown("---")
 
         # Badge de alertas
         if alertas["total"] > 0:
