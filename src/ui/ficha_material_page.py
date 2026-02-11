@@ -5,8 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-
-import ficha_material as fm
+from src.services import ficha_material as fm
 from src.repositories.pedidos import carregar_pedidos
 from src.utils.formatting import formatar_moeda_br
 
