@@ -71,19 +71,26 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     else:
         df["fornecedor_id"] = ""
 
-    if df_fornecedores is not None and not df_fornecedores.empty and "id" in df_fornecedores.columns:
-        df_f = df_fornecedores.copy()
-        df_f["id"] = df_f["id"].astype(str)
-        nome_col = "nome_fantasia" if "nome_fantasia" in df_f.columns else ("nome" if "nome" in df_f.columns else None)
-        cols_keep = ["id"] + ([nome_col] if nome_col else [])
-        df = df.merge(df_f[cols_keep], left_on="fornecedor_id", right_on="id", how="left")
-        if nome_col:
-            df["fornecedor_nome"] = df[nome_col]
-        else:
-            df["fornecedor_nome"] = pd.NA
-        df["fornecedor_nome"] = df["fornecedor_nome"].fillna(df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A"))
-    else:
-        df["fornecedor_nome"] = df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A")
+    if df_fornecedores is not None and 'fornecedor_id' in df.columns:
+        df = df.merge(
+            df_fornecedores[['id', 'nome_fantasia', 'nome']],
+            left_on='fornecedor_id',
+            right_on='id',
+            how='left',
+            suffixes=('', '_forn')  # evita sobrescrever id do pedido
+        )
+
+        # Criar fornecedor_nome com fallback inteligente
+        df['fornecedor_nome'] = (
+            df['nome_fantasia']
+            .fillna(df['nome'])
+            .fillna('Fornecedor não identificado')
+        )
+
+        # Remove colunas extras do merge
+        if 'id_forn' in df.columns:
+            df = df.drop(columns=['id_forn'])
+
 
     # ============================
     # 1) Pedidos Atrasados
@@ -131,11 +138,12 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     # ============================
     # Taxa de sucesso: entregas no prazo / total (aproximação: entregue sem atraso)
     if "fornecedor_nome" in df.columns and df["fornecedor_nome"].notna().any():
+        id_col = "id" if "id" in df.columns else df.columns[0]
+
         grp = df.groupby("fornecedor_nome", dropna=False).agg(
-            total_pedidos=("id", "count"),
-            entregues=("entregue", "sum"),
-            atrasados=("_atrasado", "sum"),
-        ).reset_index()
+            total_pedidos=(id_col, "count"),
+            valor_total=("valor_total", "sum") if "valor_total" in df.columns else (id_col, "count")
+        )
 
         # (entregues - atrasados) aproxima "entregues no prazo"
         grp["taxa_sucesso"] = ((grp["entregues"] - grp["atrasados"]) / grp["total_pedidos"] * 100).fillna(0)
