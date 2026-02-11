@@ -51,13 +51,18 @@ def _apply_filters(
     filtrar_data: bool,
     data_inicio,
     data_fim,
+    search_series: pd.Series | None = None,
 ) -> pd.DataFrame:
+    """Aplica filtros de forma barata (evita recomputar strings de busca)."""
     out = df
 
-    # Busca textual (usa série pré-processada)
+    # Busca textual (usa série pré-processada alinhada ao index)
     if busca:
-        s = _build_search_series(_df_stamp(out), out)
-        out = out[s.str.contains(busca.lower(), na=False)]
+        s = search_series
+        if s is None or len(s) != len(df) or not s.index.equals(df.index):
+            s = _build_search_series(_df_stamp(df), df)
+        mask = s.str.contains(str(busca).lower(), na=False)
+        out = out[mask]
 
     if dept and dept != "Todos" and "departamento" in out.columns:
         out = out[out["departamento"] == dept]
@@ -94,6 +99,14 @@ def _paginate(df: pd.DataFrame, page: int, page_size: int) -> pd.DataFrame:
     start = (page - 1) * page_size
     end = start + page_size
     return df.iloc[start:end]
+
+
+def _download_df(df: pd.DataFrame, nome: str) -> None:
+    """Botão de download CSV do dataframe filtrado."""
+    if df is None or df.empty:
+        return
+    csv_bytes = df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button("⬇️ Baixar resultado (CSV)", data=csv_bytes, file_name=nome, mime="text/csv", use_container_width=True)
 
 
 def exibir_consulta_pedidos(_supabase):
@@ -158,6 +171,9 @@ def exibir_consulta_pedidos(_supabase):
             with col_b:
                 limpar = st.form_submit_button("Limpar")
 
+        if aplicar:
+            st.session_state.pagina_consulta = 1
+
         if limpar:
             for k in ("c_busca","c_dept","c_status","c_situacao","c_filtrar_data","c_data_inicio","c_data_fim","c_page_size",
                       "busca_detalhes","pedido_id_selecionado","pagina_consulta"):
@@ -178,7 +194,8 @@ def exibir_consulta_pedidos(_supabase):
     # ----------------------------
     # Aplicar filtros
     # ----------------------------
-    df_filtrado = _apply_filters(df_pedidos, busca, dept, status, situacao, filtrar_data, data_inicio, data_fim)
+    search_series = _build_search_series(_df_stamp(df_pedidos), df_pedidos)
+    df_filtrado = _apply_filters(df_pedidos, busca, dept, status, situacao, filtrar_data, data_inicio, data_fim, search_series=search_series)
 
     st.info(f"📊 {len(df_filtrado)} pedidos encontrados")
 
@@ -272,6 +289,9 @@ def exibir_consulta_pedidos(_supabase):
 
     if "pagina_consulta" not in st.session_state:
         st.session_state.pagina_consulta = 1
+    else:
+        # garante que a página atual existe após mudar filtros
+        st.session_state.pagina_consulta = max(1, min(int(st.session_state.pagina_consulta), total_pages))
 
     colp1, colp2, colp3 = st.columns([2, 2, 6])
     with colp1:
