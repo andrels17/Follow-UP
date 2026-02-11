@@ -84,6 +84,168 @@ def _download_df(df: pd.DataFrame, nome: str) -> None:
         use_container_width=True,
     )
 
+DEPARTAMENTOS_VALIDOS = [
+    "Estoque", "Caminhões", "Oficina Geral", "Borracharia",
+    "Máquinas pesadas", "Veic. Leves", "Tratores", "Colhedoras",
+    "Irrigação", "Reboques", "Carregadeiras"
+]
+STATUS_VALIDOS = ["Sem OC", "Tem OC", "Em Transporte", "Entregue"]
+
+
+def _coerce_date(x):
+    """Converte valor para YYYY-MM-DD ou None."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    dt = pd.to_datetime(x, errors="coerce")
+    if pd.isna(dt):
+        return None
+    return dt.strftime("%Y-%m-%d")
+
+
+def _validate_upload_df(df_upload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Retorna (df_limpo, df_erros).
+    - df_limpo: dados normalizados prontos para importação (ainda sem fornecedor_id resolvido)
+    - df_erros: linhas com erros (linha do arquivo + erro)
+    """
+    if df_upload is None or df_upload.empty:
+        return df_upload, pd.DataFrame([{"linha": "-", "erro": "Arquivo vazio"}])
+
+    df = df_upload.copy()
+
+    # Normalizações básicas
+    for c in ["descricao", "departamento", "status", "nr_oc", "nr_solicitacao", "cod_equipamento", "cod_material"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).where(df[c].notna(), None)
+            df[c] = df[c].apply(lambda v: v.strip() if isinstance(v, str) else v)
+
+    # Coerções numéricas
+    if "qtde_solicitada" in df.columns:
+        df["qtde_solicitada"] = pd.to_numeric(df["qtde_solicitada"], errors="coerce")
+    if "qtde_entregue" in df.columns:
+        df["qtde_entregue"] = pd.to_numeric(df["qtde_entregue"], errors="coerce").fillna(0)
+    else:
+        df["qtde_entregue"] = 0
+
+    if "valor_total" in df.columns:
+        df["valor_total"] = pd.to_numeric(df["valor_total"], errors="coerce").fillna(0)
+    else:
+        df["valor_total"] = 0
+
+    # Datas (podem vir vazias)
+    for c in ["data_solicitacao", "data_oc", "previsao_entrega"]:
+        if c in df.columns:
+            df[c] = df[c].apply(_coerce_date)
+        else:
+            df[c] = None
+
+    # Fornecedor
+    if "cod_fornecedor" in df.columns:
+        df["cod_fornecedor"] = pd.to_numeric(df["cod_fornecedor"], errors="coerce")
+    else:
+        df["cod_fornecedor"] = None
+
+    erros = []
+    for i, r in df.iterrows():
+        linha = int(i) + 2  # +2 = header + 1-index excel/csv
+
+        # obrigatórios
+        if "descricao" not in df.columns or r.get("descricao") is None or str(r.get("descricao")).strip() == "":
+            erros.append({"linha": linha, "erro": "Descrição vazia"})
+        if pd.isna(r.get("qtde_solicitada")) or float(r.get("qtde_solicitada") or 0) <= 0:
+            erros.append({"linha": linha, "erro": "Quantidade solicitada inválida"})
+
+        # domínio
+        dept = r.get("departamento")
+        if dept and dept not in DEPARTAMENTOS_VALIDOS:
+            erros.append({"linha": linha, "erro": f"Departamento inválido: {dept}"})
+
+        stt = r.get("status")
+        if stt and stt not in STATUS_VALIDOS:
+            erros.append({"linha": linha, "erro": f"Status inválido: {stt}"})
+
+        # datas inválidas: se coluna tinha valor mas virou None após coerção
+        for dc in ["data_solicitacao", "data_oc", "previsao_entrega"]:
+            if dc in df_upload.columns:
+                raw = df_upload.iloc[i].get(dc)
+                if raw is not None and not (isinstance(raw, float) and pd.isna(raw)):
+                    if r.get(dc) is None:
+                        erros.append({"linha": linha, "erro": f"Data inválida em {dc}: {raw}"})
+
+        # fornecedor: se informado, precisa ser int
+        if "cod_fornecedor" in df.columns and pd.notna(r.get("cod_fornecedor")):
+            try:
+                int(r.get("cod_fornecedor"))
+            except Exception:
+                erros.append({"linha": linha, "erro": f"cod_fornecedor inválido: {r.get('cod_fornecedor')}"})
+
+    df_erros = pd.DataFrame(erros) if erros else pd.DataFrame(columns=["linha", "erro"])
+    return df, df_erros
+
+
+def _resolve_import_plan(_supabase, df: pd.DataFrame, modo_importacao: str) -> tuple[int, int]:
+    """
+    Calcula quantos serão inseridos/atualizados (pré-visualização).
+    Só considera atualização por nr_oc quando modo é 'Atualizar...'
+    """
+    if df is None or df.empty:
+        return 0, 0
+
+    if modo_importacao != "Atualizar pedidos existentes (por N° OC)":
+        return len(df), 0
+
+    # somente linhas com nr_oc
+    ocs = df["nr_oc"].dropna().astype(str).str.strip()
+    ocs = [x for x in ocs.tolist() if x]
+    if not ocs:
+        return len(df), 0
+
+    # busca existentes
+    try:
+        res = _supabase.table("pedidos").select("nr_oc").in_("nr_oc", ocs).execute()
+        existentes = set([r["nr_oc"] for r in (res.data or []) if r.get("nr_oc")])
+    except Exception:
+        # fallback simples (sem quebrar)
+        existentes = set()
+
+    atualiza = 0
+    insere = 0
+    for _, r in df.iterrows():
+        nr_oc = str(r.get("nr_oc") or "").strip()
+        if nr_oc and nr_oc in existentes:
+            atualiza += 1
+        else:
+            insere += 1
+    return insere, atualiza
+
+
+def _bulk_update(_supabase, ids: list[str], payload: dict) -> tuple[int, list[str]]:
+    """
+    Tenta atualizar em lote; se não suportar, faz loop.
+    Retorna (qtd_ok, erros)
+    """
+    if not ids:
+        return 0, []
+
+    erros = []
+    ok = 0
+
+    # tenta batch com in_
+    try:
+        _supabase.table("pedidos").update(payload).in_("id", ids).execute()
+        return len(ids), []
+    except Exception:
+        pass
+
+    # fallback: update um a um
+    for pid in ids:
+        try:
+            _supabase.table("pedidos").update(payload).eq("id", pid).execute()
+            ok += 1
+        except Exception as e:
+            erros.append(f"{pid}: {e}")
+    return ok, erros
+
 
 def exibir_gestao_pedidos(_supabase):
     """Exibe página de gestão (criar/editar) pedidos - Apenas Admin"""
