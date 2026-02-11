@@ -75,31 +75,25 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     # Fornecedor (merge + fallback)
     # ============================
     if "fornecedor_id" in df.columns:
-        df["fornecedor_id"] = df["fornecedor_id"].astype(str)
+        df["fornecedor_id"] = df["fornecedor_id"].astype(str).str.strip()
     else:
         df["fornecedor_id"] = ""
 
-    if (
-        df_fornecedores is not None
-        and not df_fornecedores.empty
-        and "id" in df_fornecedores.columns
-        and "fornecedor_id" in df.columns
-    ):
+    # Normalizar df_fornecedores ANTES de checar colunas
+    df_f = None
+    if df_fornecedores is not None and not df_fornecedores.empty:
         df_f = df_fornecedores.copy()
-        df_f["id"] = df_f["id"].astype(str)
-
-        
         df_f.columns = [c.strip().lower() for c in df_f.columns]
 
+        # garantir que existe id (mesmo que venha como "ID", já vira "id")
+        if "id" in df_f.columns:
+            df_f["id"] = df_f["id"].astype(str).str.strip()
+        else:
+            df_f = None
+
+    if df_f is not None and "fornecedor_id" in df.columns:
         # escolher melhor coluna possível para nome
-        candidatas = [
-            "nome_fantasia",
-            "fantasia",
-            "nome",
-            "razao_social",
-            "razao",
-            "fornecedor",
-        ]
+        candidatas = ["nome_fantasia", "fantasia", "nome", "razao_social", "razao", "fornecedor"]
         nome_col = next((c for c in candidatas if c in df_f.columns), None)
 
         cols_keep = ["id"] + ([nome_col] if nome_col else [])
@@ -130,7 +124,7 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
         # fallback quando não há df_fornecedores
         df["fornecedor_nome"] = df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A")
 
-    # ============================
+# ============================
     # 1) Pedidos Atrasados
     # ============================
     df_atrasados = df[df["_atrasado"]].copy()
