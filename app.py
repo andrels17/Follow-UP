@@ -1,4 +1,5 @@
 import streamlit as st
+import textwrap
 
 st.set_page_config(
     page_title="Sistema de Follow-Up",
@@ -38,7 +39,7 @@ def _safe_len(x) -> int:
 def _industrial_sidebar_css() -> None:
     """Tema corporativo industrial + barra lateral laranja no item ativo + animações suaves."""
     st.markdown(
-        r"""
+        textwrap.dedent(r"""
         <style>
             :root {
                 --fu-bg: #0b1220;
@@ -138,7 +139,7 @@ def _industrial_sidebar_css() -> None:
                 opacity: .9;
             }
         </style>
-        """,
+        """),
         unsafe_allow_html=True,
     )
 
@@ -172,56 +173,54 @@ def main():
         perfil = str(st.session_state.usuario.get("perfil", "")).title() or "—"
 
         st.markdown(
-            f"""
-            <div class="fu-card">
-                <p class="fu-user-label">👷 Sistema de Follow-Up</p>
-                <div class="fu-bar"></div>
-                <p class="fu-user-name">{nome}</p>
-                <p class="fu-user-role">{perfil}</p>
+            textwrap.dedent(f"""<div class="fu-card">
+  <p class="fu-user-label">👷 Sistema de Follow-Up</p>
+  <div class="fu-bar"></div>
+  <p class="fu-user-name">{nome}</p>
+  <p class="fu-user-role">{perfil}</p>
 
-                <div class="fu-kpi-row">
-                    <div class="fu-kpi">
-                        <p class="fu-kpi-title">⚠️ Atrasados</p>
-                        <p class="fu-kpi-value">{atrasados}</p>
-                    </div>
-                    <div class="fu-kpi">
-                        <p class="fu-kpi-title">🚨 Críticos</p>
-                        <p class="fu-kpi-value">{criticos}</p>
-                    </div>
-                    <div class="fu-kpi">
-                        <p class="fu-kpi-title">⏰ Vencendo</p>
-                        <p class="fu-kpi-value">{vencendo}</p>
-                    </div>
-                </div>
-            </div>
-            """,
+  <div class="fu-kpi-row">
+    <div class="fu-kpi">
+      <p class="fu-kpi-title">⚠️ Atrasados</p>
+      <p class="fu-kpi-value">{atrasados}</p>
+    </div>
+    <div class="fu-kpi">
+      <p class="fu-kpi-title">🚨 Críticos</p>
+      <p class="fu-kpi-value">{criticos}</p>
+    </div>
+    <div class="fu-kpi">
+      <p class="fu-kpi-title">⏰ Vencendo</p>
+      <p class="fu-kpi-value">{vencendo}</p>
+    </div>
+  </div>
+</div>
+"""),
             unsafe_allow_html=True,
         )
 
         # Card de alertas (quando houver)
         if total_alertas > 0:
             st.markdown(
-                f"""
-                <div class="fu-card" style="
-                    border: 1px solid rgba(245,158,11,0.35);
-                    background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(255,255,255,0.04));
-                ">
-                    <div style="display:flex; align-items:center; justify-content:space-between;">
-                        <div style="font-weight:900;">🔔 Alertas</div>
-                        <div style="
-                            background: rgba(239,68,68,0.95);
-                            color: white;
-                            padding: 2px 10px;
-                            border-radius: 999px;
-                            font-weight: 900;
-                            font-size: 12px;
-                        ">{total_alertas}</div>
-                    </div>
-                    <div style="margin-top:6px; font-size: 12px; opacity: .82;">
-                        Revise atrasos, vencimentos e fornecedores.
-                    </div>
-                </div>
-                """,
+                textwrap.dedent(f"""<div class="fu-card" style="
+  border: 1px solid rgba(245,158,11,0.35);
+  background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(255,255,255,0.04));
+">
+  <div style="display:flex; align-items:center; justify-content:space-between;">
+    <div style="font-weight:900;">🔔 Alertas</div>
+    <div style="
+      background: rgba(239,68,68,0.95);
+      color: white;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-weight: 900;
+      font-size: 12px;
+    ">{total_alertas}</div>
+  </div>
+  <div style="margin-top:6px; font-size: 12px; opacity: .82;">
+    Revise atrasos, vencimentos e fornecedores.
+  </div>
+</div>
+"""),
                 unsafe_allow_html=True,
             )
 
