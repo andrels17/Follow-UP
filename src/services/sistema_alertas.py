@@ -61,10 +61,35 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
 
     df["_atrasado"] = df["_pendente"] & df["_due"].notna() & (df["_due"] < hoje)
 
+        # ============================
+    # Fornecedor: tentar manter nome já vindo da view (vw_pedidos_completo),
+    # e usar df_fornecedores apenas como complemento.
+    # ============================
     if "fornecedor_id" in df.columns:
         df["fornecedor_id"] = df["fornecedor_id"].astype(str).str.strip()
     else:
         df["fornecedor_id"] = ""
+
+    # Nome base (quando já vem da view)
+    if "fornecedor_nome" in df.columns:
+        df["_fornecedor_nome_base"] = (
+            df["fornecedor_nome"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace({"nan": "", "None": "", "null": ""})
+        )
+    elif "fornecedor" in df.columns:
+        # fallback: algumas fontes usam 'fornecedor' como nome
+        df["_fornecedor_nome_base"] = (
+            df["fornecedor"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace({"nan": "", "None": "", "null": ""})
+        )
+    else:
+        df["_fornecedor_nome_base"] = ""
 
     df_f = None
     if df_fornecedores is not None and not df_fornecedores.empty:
@@ -82,12 +107,11 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
             if possivel_nome in df_f.columns:
                 nome_col = possivel_nome
                 break
-        
+
         cols_keep = ["id"]
         if nome_col:
             cols_keep.append(nome_col)
 
-        # Fazer o merge preservando os índices
         df = df.merge(
             df_f[cols_keep],
             left_on="fornecedor_id",
@@ -96,29 +120,52 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
             suffixes=("", "_forn"),
         )
 
-        # Atribuir o nome do fornecedor
+        # Nome vindo da tabela de fornecedores
         if nome_col and nome_col in df.columns:
-            df["fornecedor_nome"] = df[nome_col].fillna("")
+            df["_fornecedor_nome_merge"] = df[nome_col].fillna("").astype(str).str.strip()
         else:
-            df["fornecedor_nome"] = ""
+            df["_fornecedor_nome_merge"] = ""
 
-        # Fallback para fornecedores sem nome encontrado
+        # Prioridade:
+        # 1) nome da tabela fornecedores (merge)
+        # 2) nome já vindo da view (base)
+        # 3) fallback "Fornecedor <id>"
         df["fornecedor_nome"] = df.apply(
-            lambda row: row["fornecedor_nome"] if row["fornecedor_nome"] and str(row["fornecedor_nome"]).strip() 
-            else (f"Fornecedor {row['fornecedor_id']}" if row['fornecedor_id'] and str(row['fornecedor_id']).strip() 
-            else "N/A"), 
-            axis=1
+            lambda row: (
+                row["_fornecedor_nome_merge"]
+                if row["_fornecedor_nome_merge"]
+                else (
+                    row["_fornecedor_nome_base"]
+                    if row["_fornecedor_nome_base"]
+                    else (
+                        f"Fornecedor {row['fornecedor_id']}"
+                        if row.get("fornecedor_id") and str(row.get("fornecedor_id")).strip()
+                        else "N/A"
+                    )
+                )
+            ),
+            axis=1,
         )
 
-        # Remover colunas duplicadas
-        if "id_forn" in df.columns:
-            df.drop(columns=["id_forn"], inplace=True, errors="ignore")
+        # Limpeza
+        df.drop(columns=["id", "_fornecedor_nome_merge"], inplace=True, errors="ignore")
     else:
-        # Se não há tabela de fornecedores
-        df["fornecedor_nome"] = df["fornecedor_id"].apply(
-            lambda x: f"Fornecedor {x}" if x and str(x).strip() else "N/A"
+        # Sem tabela de fornecedores: usar o nome base da view, e por último o id
+        df["fornecedor_nome"] = df.apply(
+            lambda row: (
+                row["_fornecedor_nome_base"]
+                if row["_fornecedor_nome_base"]
+                else (
+                    f"Fornecedor {row['fornecedor_id']}"
+                    if row.get("fornecedor_id") and str(row.get("fornecedor_id")).strip()
+                    else "N/A"
+                )
+            ),
+            axis=1,
         )
-        
+
+    df.drop(columns=["_fornecedor_nome_base"], inplace=True, errors="ignore")
+
     df_atrasados = df[df["_atrasado"]].copy()
     if not df_atrasados.empty:
         for _, pedido in df_atrasados.iterrows():
@@ -225,20 +272,22 @@ def exibir_badge_alertas(alertas: dict):
         return
 
     st.markdown(
-        f"""
-        <div style="
-            background-color:#fff3cd;
-            padding:12px;
-            border-radius:8px;
-            border:1px solid #ffeeba;
-            text-align:center;
-            font-weight:600;
-        ">
-            🔔 {total} alerta(s) pendente(s)
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    f"""
+    <div style="
+        background: rgba(245, 158, 11, 0.18);
+        border: 1px solid rgba(245, 158, 11, 0.35);
+        color: #fbbf24;
+        padding: 10px 12px;
+        border-radius: 12px;
+        text-align: center;
+        font-weight: 700;
+        letter-spacing: .2px;
+    ">
+        🔔 {total} alerta(s) pendente(s)
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 def exibir_painel_alertas(alertas: dict, formatar_moeda_br):
     """Alias para compatibilidade com o app.py."""
@@ -266,12 +315,12 @@ def criar_card_pedido(pedido: dict, tipo: str, formatar_moeda_br):
         with st.container():
             st.markdown(
                 f"""
-                <div style='border-left: 4px solid #dc2626; padding: 12px; margin-bottom: 10px; background-color: rgba(220, 38, 38, 0.05); border-radius: 4px;'>
+                <div style='border-left: 4px solid #dc2626; padding: 12px; margin-bottom: 10px; background-color: rgba(220, 38, 38, 0.10); border-radius: 10px;'>
                     <p style='margin: 0; font-size: 14px; color: #dc2626; font-weight: 600;'>🔴 OC: {nr_oc_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Descrição:</strong> {desc_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Fornecedor:</strong> {fornecedor_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Departamento:</strong> {dept}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Valor:</strong> {formatar_moeda_br(valor)}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Descrição:</strong> {desc_txt}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Fornecedor:</strong> {fornecedor_txt}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Departamento:</strong> {dept}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Valor:</strong> {formatar_moeda_br(valor)}</p>
                     <p style='margin: 4px 0; font-size: 13px; color: #dc2626; font-weight: 600;'><strong>⏰ Atrasado há {dias} dia(s)</strong></p>
                 </div>
                 """,
@@ -285,12 +334,12 @@ def criar_card_pedido(pedido: dict, tipo: str, formatar_moeda_br):
         with st.container():
             st.markdown(
                 f"""
-                <div style='border-left: 4px solid #f59e0b; padding: 12px; margin-bottom: 10px; background-color: rgba(245, 158, 11, 0.05); border-radius: 4px;'>
+                <div style='border-left: 4px solid #f59e0b; padding: 12px; margin-bottom: 10px; background-color: rgba(245, 158, 11, 0.10); border-radius: 10px;'>
                     <p style='margin: 0; font-size: 14px; color: #f59e0b; font-weight: 600;'>⏰ OC: {nr_oc_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Descrição:</strong> {desc_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Fornecedor:</strong> {fornecedor_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Valor:</strong> {formatar_moeda_br(valor)}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Previsão:</strong> {prev}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Descrição:</strong> {desc_txt}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Fornecedor:</strong> {fornecedor_txt}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Valor:</strong> {formatar_moeda_br(valor)}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Previsão:</strong> {prev}</p>
                     <p style='margin: 4px 0; font-size: 13px; color: #f59e0b; font-weight: 600;'><strong>⏳ Vence em {dias} dia(s)</strong></p>
                 </div>
                 """,
@@ -304,12 +353,12 @@ def criar_card_pedido(pedido: dict, tipo: str, formatar_moeda_br):
         with st.container():
             st.markdown(
                 f"""
-                <div style='border-left: 4px solid #7c3aed; padding: 12px; margin-bottom: 10px; background-color: rgba(124, 58, 237, 0.05); border-radius: 4px;'>
+                <div style='border-left: 4px solid #7c3aed; padding: 12px; margin-bottom: 10px; background-color: rgba(124, 58, 237, 0.10); border-radius: 10px;'>
                     <p style='margin: 0; font-size: 14px; color: #7c3aed; font-weight: 600;'>🚨 OC: {nr_oc_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Descrição:</strong> {desc_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Fornecedor:</strong> {fornecedor_txt}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Departamento:</strong> {dept}</p>
-                    <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Previsão:</strong> {prev}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Descrição:</strong> {desc_txt}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Fornecedor:</strong> {fornecedor_txt}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Departamento:</strong> {dept}</p>
+                    <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Previsão:</strong> {prev}</p>
                     <p style='margin: 4px 0; font-size: 13px; color: #7c3aed; font-weight: 600;'><strong>💰 Valor: {formatar_moeda_br(valor)}</strong></p>
                 </div>
                 """,
@@ -335,25 +384,25 @@ def criar_card_fornecedor(fornecedor: dict, formatar_moeda_br):
     if taxa < 40:
         cor = "#dc2626"
         nivel = "CRÍTICO"
-        bg_color = "rgba(220, 38, 38, 0.05)"
+        bg_color = "rgba(220, 38, 38, 0.10)"
     elif taxa < 55:
         cor = "#f59e0b"
         nivel = "GRAVE"
-        bg_color = "rgba(245, 158, 11, 0.05)"
+        bg_color = "rgba(245, 158, 11, 0.10)"
     else:
         cor = "#eab308"
         nivel = "ATENÇÃO"
-        bg_color = "rgba(234, 179, 8, 0.05)"
+        bg_color = "rgba(234, 179, 8, 0.10)"
     
     with st.container():
         st.markdown(
             f"""
-            <div style='border-left: 4px solid {cor}; padding: 12px; margin-bottom: 10px; background-color: {bg_color}; border-radius: 4px;'>
+            <div style='border-left: 4px solid {cor}; padding: 12px; margin-bottom: 10px; background-color: {bg_color}; border-radius: 10px;'>
                 <p style='margin: 0; font-size: 14px; color: {cor}; font-weight: 600;'>📉 {nome}</p>
-                <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Nível de Risco:</strong> <span style='color: {cor}; font-weight: 600;'>{nivel}</span></p>
-                <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Taxa de Sucesso:</strong> {taxa:.1f}%</p>
-                <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Total de Pedidos:</strong> {total}</p>
-                <p style='margin: 4px 0; font-size: 13px; color: #374151;'><strong>Pedidos Atrasados:</strong> {atrasados}</p>
+                <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Nível de Risco:</strong> <span style='color: {cor}; font-weight: 600;'>{nivel}</span></p>
+                <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Taxa de Sucesso:</strong> {taxa:.1f}%</p>
+                <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Total de Pedidos:</strong> {total}</p>
+                <p style='margin: 4px 0; font-size: 13px; color: rgba(229,231,235,0.92);'><strong>Pedidos Atrasados:</strong> {atrasados}</p>
             </div>
             """,
             unsafe_allow_html=True
@@ -375,36 +424,94 @@ def exibir_alertas_completo(alertas: dict, formatar_moeda_br):
         return html.escape(txt_str)
     
     st.title("🔔 Central de Notificações e Alertas")
+
+st.markdown(
+    """
+    <style>
+      .fu-kpi {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        padding: 14px 14px;
+        margin-bottom: 6px;
+      }
+      .fu-kpi-title {
+        font-size: 13px;
+        opacity: 0.9;
+        margin: 0 0 6px 0;
+      }
+      .fu-kpi-value {
+        font-size: 30px;
+        font-weight: 800;
+        line-height: 1.1;
+        margin: 0;
+      }
+      .fu-kpi-sub {
+        font-size: 12px;
+        opacity: 0.85;
+        margin: 6px 0 0 0;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
     
-    # Resumo geral no topo
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            label="⚠️ Atrasados",
-            value=len(alertas['pedidos_atrasados']),
-            delta=f"-{len(alertas['pedidos_atrasados'])} dias" if alertas['pedidos_atrasados'] else None,
-            delta_color="inverse"
-        )
-    
-    with col2:
-        st.metric(
-            label="⏰ Vencendo em 3 dias",
-            value=len(alertas['pedidos_vencendo'])
-        )
-    
-    with col3:
-        st.metric(
-            label="🚨 Pedidos Críticos",
-            value=len(alertas['pedidos_criticos'])
-        )
-    
-    with col4:
-        st.metric(
-            label="📦 Fornecedores Problema",
-            value=len(alertas['fornecedores_baixa_performance'])
-        )
-    
+    # Resumo geral no topo (cards com melhor contraste)
+a = len(alertas.get("pedidos_atrasados", []))
+v = len(alertas.get("pedidos_vencendo", []))
+c = len(alertas.get("pedidos_criticos", []))
+f = len(alertas.get("fornecedores_baixa_performance", []))
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.markdown(
+        f"""
+        <div class="fu-kpi">
+          <p class="fu-kpi-title">⚠️ Atrasados</p>
+          <p class="fu-kpi-value">{a}</p>
+          <p class="fu-kpi-sub">{'⏰ Quanto maior, pior' if a else '✅ Tudo em dia'}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with col2:
+    st.markdown(
+        f"""
+        <div class="fu-kpi">
+          <p class="fu-kpi-title">⏰ Vencendo em 3 dias</p>
+          <p class="fu-kpi-value">{v}</p>
+          <p class="fu-kpi-sub">{'⚡ Atenção' if v else '✅ Sem urgências'}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with col3:
+    st.markdown(
+        f"""
+        <div class="fu-kpi">
+          <p class="fu-kpi-title">🚨 Pedidos Críticos</p>
+          <p class="fu-kpi-value">{c}</p>
+          <p class="fu-kpi-sub">{'💰 Alto valor / urgente' if c else '✅ Ok'}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with col4:
+    st.markdown(
+        f"""
+        <div class="fu-kpi">
+          <p class="fu-kpi-title">📦 Fornecedores Problema</p>
+          <p class="fu-kpi-value">{f}</p>
+          <p class="fu-kpi-sub">{'📉 Baixa performance' if f else '✅ Ok'}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown("---")
     
     # Tabs com diferentes tipos de alertas
