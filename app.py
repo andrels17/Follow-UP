@@ -256,21 +256,7 @@ def main():
 
         st.markdown("---")
 
-        if st.button("🚪 Sair", use_container_width=True):
-            try:
-                ba.registrar_acao(
-                    st.session_state.usuario,
-                    "Logout",
-                    {"timestamp": datetime.now().isoformat()},
-                    supabase,
-                )
-            except Exception:
-                pass
-            try:
-                del st.session_state.usuario
-            except Exception:
-                pass
-            st.rerun()
+
 
         st.caption("© Follow-up de Compras v3.0")
         st.caption("Criado por André Luis e Yasmim Lima")
@@ -294,7 +280,22 @@ def main():
         exibir_gestao_usuarios(supabase)
     elif pagina == "💾 Backup":
         ba.realizar_backup_manual(supabase)
-
+       
+        if st.button("🚪 Sair", use_container_width=True):
+            try:
+                ba.registrar_acao(
+                    st.session_state.usuario,
+                    "Logout",
+                    {"timestamp": datetime.now().isoformat()},
+                    supabase,
+                )
+            except Exception:
+                pass
+            try:
+                del st.session_state.usuario
+            except Exception:
+                pass
+            st.rerun()
 
 if __name__ == "__main__":
     main()
