@@ -69,10 +69,24 @@ def _download_csv(df: pd.DataFrame, filename: str):
     st.download_button("⬇️ CSV", csv, file_name=filename, mime="text/csv")
 
 def _download_xlsx(df: pd.DataFrame, filename: str):
+    """Download XLSX without requiring xlsxwriter (fallback to openpyxl)."""
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    # Prefer xlsxwriter if available, else fallback to openpyxl (usually installed)
+    engine = "xlsxwriter"
+    try:
+        __import__("xlsxwriter")
+    except Exception:
+        engine = "openpyxl"
+
+    with pd.ExcelWriter(output, engine=engine) as writer:
         df.to_excel(writer, index=False, sheet_name="Pedidos")
-    st.download_button("⬇️ XLSX", output.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.download_button(
+        "⬇️ XLSX",
+        output.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 def exibir_consulta_pedidos(_supabase):
     st.title("🔎 Consultar Pedidos")
