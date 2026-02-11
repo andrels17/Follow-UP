@@ -44,7 +44,7 @@ def main():
 
 
     # Sidebar com informações do usuário
-        st.markdown(f"""
+    st.markdown(f"""
         <div style="
             background-color:#1f2937;
             padding:12px;
