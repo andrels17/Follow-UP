@@ -58,9 +58,7 @@ def _industrial_sidebar_css() -> None:
                     var(--fu-bg);
             }
 
-            section[data-testid="stSidebar"] > div {
-                padding-top: 0.8rem;
-            }
+            section[data-testid="stSidebar"] > div { padding-top: 0.8rem; }
 
             .fu-card {
                 background: var(--fu-card);
@@ -88,7 +86,7 @@ def _industrial_sidebar_css() -> None:
             .fu-kpi-title { font-size: 11px; opacity: .78; margin: 0 0 2px 0; }
             .fu-kpi-value { font-size: 18px; font-weight: 900; margin: 0; }
 
-            /* Melhorias no Radio (menu) */
+            /* Menu radio */
             div[role="radiogroup"] label {
                 padding: 10px 12px;
                 border-radius: 12px;
@@ -102,14 +100,14 @@ def _industrial_sidebar_css() -> None:
                 border: 1px solid rgba(245,158,11,0.22);
             }
 
-            /* Item ativo: "barra vertical laranja" via box-shadow inset */
+            /* Item ativo: barra laranja */
             div[role="radiogroup"] input:checked + div {
                 background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(255,255,255,0.04));
                 border-radius: 12px;
                 box-shadow: inset 4px 0 0 var(--fu-accent);
             }
 
-            /* Expanders (menu colapsável) */
+            /* Expanders */
             details {
                 background: rgba(255,255,255,0.02);
                 border: 1px solid rgba(255,255,255,0.06);
@@ -117,11 +115,7 @@ def _industrial_sidebar_css() -> None:
                 padding: 6px 10px;
                 margin-bottom: 10px;
             }
-            summary {
-                cursor: pointer;
-                font-weight: 900;
-                color: var(--fu-text);
-            }
+            summary { cursor: pointer; font-weight: 900; color: var(--fu-text); }
 
             /* Botões */
             button[kind="secondary"] {
@@ -150,6 +144,38 @@ def _label_alertas(total_alertas: int) -> str:
     return "🔔 Alertas e Notificações"
 
 
+def _sidebar_footer(supabase_client) -> None:
+    """Renderiza Sair + créditos (sempre por último na sidebar)."""
+    st.markdown("---")
+    if st.button("🚪 Sair", use_container_width=True, key="btn_logout_sidebar"):
+        try:
+            ba.registrar_acao(
+                st.session_state.usuario,
+                "Logout",
+                {"timestamp": datetime.now().isoformat()},
+                supabase_client,
+            )
+        except Exception:
+            pass
+
+        try:
+            del st.session_state.usuario
+        except Exception:
+            pass
+
+        st.rerun()
+
+    st.markdown(
+        """
+        <div style="font-size:11px; opacity:0.6; margin-top:10px;">
+            © Follow-up de Compras v3.0<br>
+            Criado por André Luis e Yasmim Lima
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     if not verificar_autenticacao():
         exibir_login(supabase)
@@ -161,13 +187,13 @@ def main():
     alertas = sa.calcular_alertas(df_pedidos, df_fornecedores)
     total_alertas = int(alertas.get("total", 0) or 0)
 
-    # KPIs rápidos
     atrasados = _safe_len(alertas.get("pedidos_atrasados"))
     criticos = _safe_len(alertas.get("pedidos_criticos"))
     vencendo = _safe_len(alertas.get("pedidos_vencendo"))
 
     _industrial_sidebar_css()
 
+    # ===== Sidebar topo + menus (SEM botão sair/creditos aqui) =====
     with st.sidebar:
         nome = st.session_state.usuario.get("nome", "Usuário")
         perfil = str(st.session_state.usuario.get("perfil", "")).title() or "—"
@@ -198,7 +224,6 @@ def main():
             unsafe_allow_html=True,
         )
 
-        # Card de alertas (quando houver)
         if total_alertas > 0:
             st.markdown(
                 textwrap.dedent(f"""<div class="fu-card" style="
@@ -227,7 +252,6 @@ def main():
         is_admin = st.session_state.usuario.get("perfil") == "admin"
         alertas_label = _label_alertas(total_alertas)
 
-        # Menus fechados inicialmente
         with st.expander("📊 Operações", expanded=False):
             pagina_ops = st.radio(
                 "",
@@ -253,37 +277,12 @@ def main():
                 )
 
         pagina = pagina_ops or pagina_gestao
-        
-        if st.button("🚪 Sair", use_container_width=True):
-            try:
-                ba.registrar_acao(
-                    st.session_state.usuario,
-                    "Logout",
-                    {"timestamp": datetime.now().isoformat()},
-                    supabase,
-                )
-            except Exception:
-                pass
-        
-            del st.session_state.usuario
-            st.rerun()
-        
-        st.markdown(
-            """
-            <div style="font-size:11px; opacity:0.6; margin-top:10px;">
-                © Follow-up de Compras v3.0<br>
-                Criado por André Luis e Yasmim Lima
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        
-        st.markdown("</div>", unsafe_allow_html=True)
 
-
+    # Normaliza label de alertas
     if pagina == alertas_label:
         pagina = "🔔 Alertas e Notificações"
 
+    # ===== Página (pode adicionar filtros na sidebar aqui) =====
     if pagina == "Dashboard":
         exibir_dashboard(supabase)
     elif pagina == "🔔 Alertas e Notificações":
@@ -301,34 +300,9 @@ def main():
     elif pagina == "💾 Backup":
         ba.realizar_backup_manual(supabase)
 
-    # ✅ Sempre renderizar por último na sidebar (abaixo dos filtros das páginas)
-        with st.sidebar:
-            st.markdown("---")
-    
-            if st.button("🚪 Sair", use_container_width=True):
-                try:
-                    ba.registrar_acao(
-                        st.session_state.usuario,
-                        "Logout",
-                        {"timestamp": datetime.now().isoformat()},
-                        supabase,
-                    )
-                except Exception:
-                    pass
-    
-                del st.session_state.usuario
-                st.rerun()
-    
-            st.markdown(
-                """
-                <div style="font-size:11px; opacity:0.6; margin-top:10px;">
-                    © Follow-up de Compras v3.0<br>
-                    Criado por André Luis e Yasmim Lima
-                </div>
-                """,
-                unsafe_allow_html=True,
-        )
-
+    # ===== Rodapé da sidebar: sempre depois dos filtros =====
+    with st.sidebar:
+        _sidebar_footer(supabase)
 
 
 if __name__ == "__main__":
