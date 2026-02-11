@@ -484,49 +484,58 @@ def exibir_gestao_pedidos(_supabase):
                         "Esta ação não pode ser desfeita!"
                     )
                 
-                if pular_duplicados and "nr_oc" in df_norm.columns and duplicados_oc > 0:
-                    df_norm = df_norm[~df_norm["nr_oc"].astype(str).str.strip().isin(existentes)]
-
-    
                 
+                # ----------------------------
+                # Validação + Prévia + Duplicidade
+                # ----------------------------
                 df_norm, df_erros = _validate_upload_df(df_upload)
 
                 if not df_erros.empty:
                     st.error(f"❌ Foram encontrados {len(df_erros)} erros no arquivo.")
                     st.dataframe(df_erros, use_container_width=True, height=260)
                     _download_df(df_erros, "erros_validacao_importacao.csv")
+                    st.stop()
                 else:
                     st.success("✅ Validação OK (sem erros).")
-                
-                insere_prev, atualiza_prev = _resolve_import_plan(_supabase, df_norm, modo_importacao)
-                cprev1, cprev2, cprev3 = st.columns(3)
-                cprev1.metric("Registros no arquivo", len(df_norm))
-                cprev2.metric("Previsão inserir", int(insere_prev))
-                cprev3.metric("Previsão atualizar", int(atualiza_prev))
-                
-                if modo_simulacao:
-                    st.info("🔎 Modo simulação ativado: nada será gravado no banco.")
-                    st.dataframe(df_norm.head(30), use_container_width=True, height=320)
-                    st.stop()
-                # --- Checagem de duplicidade (mesmo no modo "Adicionar") ---
+
+                # Checagem de duplicidade por nr_oc (mesmo no modo 'Adicionar')
                 duplicados_oc = 0
+                existentes: set[str] = set()
+
                 if "nr_oc" in df_norm.columns:
                     ocs = df_norm["nr_oc"].dropna().astype(str).str.strip()
                     ocs = [x for x in ocs.tolist() if x]
-
                     if ocs:
                         try:
                             res = _supabase.table("pedidos").select("nr_oc").in_("nr_oc", ocs).execute()
                             existentes = set([r["nr_oc"] for r in (res.data or []) if r.get("nr_oc")])
                             duplicados_oc = sum(1 for oc in ocs if oc in existentes)
                         except Exception:
+                            existentes = set()
                             duplicados_oc = 0
 
                 if duplicados_oc > 0:
-                    st.warning(f"⚠️ Encontradas **{duplicados_oc}** OCs do arquivo que já existem no banco. "
-                            f"Se você importar como **Adicionar**, pode duplicar registros.")
+                    st.warning(
+                        f"⚠️ Encontradas **{duplicados_oc}** OCs do arquivo que já existem no banco. "
+                        f"Se você importar como **Adicionar**, pode duplicar registros."
+                    )
 
-                
+                # Pular duplicados (se marcado)
+                if pular_duplicados and duplicados_oc > 0 and existentes and "nr_oc" in df_norm.columns:
+                    df_norm = df_norm[~df_norm["nr_oc"].fillna("").astype(str).str.strip().isin(existentes)]
+
+                # Pré-visualização do que vai acontecer
+                insere_prev, atualiza_prev = _resolve_import_plan(_supabase, df_norm, modo_importacao)
+                cprev1, cprev2, cprev3 = st.columns(3)
+                cprev1.metric("Registros válidos", len(df_norm))
+                cprev2.metric("Previsão inserir", int(insere_prev))
+                cprev3.metric("Previsão atualizar", int(atualiza_prev))
+
+                if modo_simulacao:
+                    st.info("🔎 Modo simulação ativado: nada será gravado no banco.")
+                    st.dataframe(df_norm.head(30), use_container_width=True, height=320)
+                    st.stop()
+
                 if st.button("🚀 Importar Dados", type="primary", use_container_width=True):
                     with st.spinner("Processando importação..."):
 
@@ -590,11 +599,11 @@ def exibir_gestao_pedidos(_supabase):
                         erros: list[str] = []
                         avisos: list[str] = []
 
-                        total_rows = int(len(df_upload))
+                        total_rows = int(len(df_norm))
                         progress_bar = st.progress(0)
                         status_txt = st.empty()
 
-                        for idx, row in norm.iterrows():
+                        for idx, row in df_norm.iterrows():
                             try:
                                 fornecedor_id = None
 
@@ -1025,11 +1034,12 @@ def exibir_gestao_pedidos(_supabase):
     
         # multiselect por ID (mais leve)
         labels, ids = _build_pedido_labels(_make_df_stamp(df_sel), df_sel)
+        id_to_label = dict(zip(ids, labels))  # evita ids.index() (O(n²))
         selecionados = st.multiselect(
             "Escolha os pedidos para aplicar a ação",
             options=ids,
             default=[],
-            format_func=lambda pid: labels[ids.index(pid)] if pid in ids else pid,
+            format_func=lambda pid: id_to_label.get(pid, pid),
         )
     
         if not selecionados:
