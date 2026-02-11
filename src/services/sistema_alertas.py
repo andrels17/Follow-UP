@@ -240,6 +240,10 @@ def exibir_badge_alertas(alertas: dict):
         unsafe_allow_html=True,
     )
 
+def exibir_painel_alertas(alertas: dict, formatar_moeda_br):
+    """Alias para compatibilidade com o app.py."""
+    return exibir_alertas_completo(alertas, formatar_moeda_br)
+
 def criar_card_pedido(pedido: dict, tipo: str, formatar_moeda_br):
     """Renderiza um card de pedido (atrasado, vencendo ou crítico)."""
     
