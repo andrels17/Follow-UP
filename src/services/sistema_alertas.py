@@ -61,9 +61,6 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
 
     df["_atrasado"] = df["_pendente"] & df["_due"].notna() & (df["_due"] < hoje)
 
-    # ============================
-    # Fornecedor (merge + fallback) - CORRIGIDO
-    # ============================
     if "fornecedor_id" in df.columns:
         df["fornecedor_id"] = df["fornecedor_id"].astype(str).str.strip()
     else:
@@ -121,10 +118,7 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
         df["fornecedor_nome"] = df["fornecedor_id"].apply(
             lambda x: f"Fornecedor {x}" if x and str(x).strip() else "N/A"
         )
-
-    # ============================
-    # 1) Pedidos Atrasados
-    # ============================
+        
     df_atrasados = df[df["_atrasado"]].copy()
     if not df_atrasados.empty:
         for _, pedido in df_atrasados.iterrows():
@@ -141,9 +135,7 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
                 "departamento": pedido.get("departamento", "N/A"),
             })
 
-    # ============================
-    # 2) Pedidos Vencendo (próximos 3 dias)
-    # ============================
+    
     data_limite = hoje + timedelta(days=3)
     df_vencendo = df[
         df["_pendente"] &
@@ -221,6 +213,32 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
 
     return alertas
 
+def exibir_badge_alertas(alertas: dict):
+    """
+    Exibe badge compacto de alertas na sidebar.
+    """
+
+    total = alertas.get("total", 0)
+
+    if total == 0:
+        st.success("✅ Nenhum alerta pendente")
+        return
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color:#fff3cd;
+            padding:12px;
+            border-radius:8px;
+            border:1px solid #ffeeba;
+            text-align:center;
+            font-weight:600;
+        ">
+            🔔 {total} alerta(s) pendente(s)
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def criar_card_pedido(pedido: dict, tipo: str, formatar_moeda_br):
     """Renderiza um card de pedido (atrasado, vencendo ou crítico)."""
