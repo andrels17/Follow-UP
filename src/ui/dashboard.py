@@ -32,14 +32,7 @@ def exibir_dashboard(_supabase):
     # Botão de diagnóstico (temporário para debug) - COMENTADO
     # if st.button("🔍 Diagnosticar Problema de Datas"):
     #     diagnostico_datas.diagnosticar_datas(df_pedidos)
-    
-    # Calcular alertas
-    alertas = sa.calcular_alertas(df_pedidos)
-    
-    # Exibir resumo de alertas
-    if alertas['total'] > 0:
-        sa.exibir_resumo_alertas_dashboard(alertas)
-        st.markdown("---")
+
     
     # KPIs no topo
     col1, col2, col3, col4, col5 = st.columns(5)
