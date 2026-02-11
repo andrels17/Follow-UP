@@ -9,7 +9,7 @@ st.set_page_config(
 
 from datetime import datetime
 
-import sistema_alertas as sa
+import src.services.sistema_alertas as sa
 import backup_auditoria as ba
 
 from src.core.config import configure_page
