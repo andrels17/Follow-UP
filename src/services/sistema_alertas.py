@@ -1,9 +1,3 @@
-"""
-Módulo de Notificações e Alertas
-Sistema de avisos proativos para gestão de pedidos
-VERSÃO FINAL CORRIGIDA - Usando componentes nativos do Streamlit
-"""
-
 import streamlit as st
 import pandas as pd
 import re
