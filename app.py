@@ -138,6 +138,19 @@ def _industrial_sidebar_css() -> None:
                 margin: 10px 0 8px 0;
                 opacity: .9;
             }
+
+            /* Faz a sidebar virar coluna flex */
+            section[data-testid="stSidebar"] > div {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+            }
+            
+            /* Bloco inferior fixado no final */
+            .fu-bottom {
+                margin-top: auto;
+            }
+            
         </style>
         """),
         unsafe_allow_html=True,
@@ -254,8 +267,10 @@ def main():
 
         pagina = pagina_ops or pagina_gestao
 
+        st.markdown('<div class="fu-bottom">', unsafe_allow_html=True)
+        
         st.markdown("---")
-
+        
         if st.button("🚪 Sair", use_container_width=True):
             try:
                 ba.registrar_acao(
@@ -266,14 +281,22 @@ def main():
                 )
             except Exception:
                 pass
-            try:
-                del st.session_state.usuario
-            except Exception:
-                pass
+        
+            del st.session_state.usuario
             st.rerun()
+        
+        st.markdown(
+            """
+            <div style="font-size:11px; opacity:0.6; margin-top:10px;">
+                © Follow-up de Compras v3.0<br>
+                Criado por André Luis e Yasmim Lima
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        st.caption("© Follow-up de Compras v3.0")
-        st.caption("Criado por André Luis e Yasmim Lima")
 
     if pagina == alertas_label:
         pagina = "🔔 Alertas e Notificações"
