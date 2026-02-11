@@ -75,7 +75,7 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     # Fornecedor (merge + fallback)
     # ============================
     if "fornecedor_id" in df.columns:
-        df["fornecedor_id"] = df["fornecedor_id"].astype(str).str.strip()
+        df["fornecedor_id"] = df["fornecedor_id"].astype(str).str.strip().str.lower()
     else:
         df["fornecedor_id"] = ""
 
@@ -87,7 +87,7 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
 
         # garantir que existe id (mesmo que venha como "ID", já vira "id")
         if "id" in df_f.columns:
-            df_f["id"] = df_f["id"].astype(str).str.strip()
+            df_f["id"] = df_f["id"].astype(str).str.strip().str.lower()
         else:
             df_f = None
 
