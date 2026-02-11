@@ -478,6 +478,25 @@ def exibir_gestao_pedidos(_supabase):
                         "⚠️ **ATENÇÃO:** Todos os pedidos existentes serão **deletados** antes da importação. "
                         "Esta ação não pode ser desfeita!"
                     )
+                df_norm, df_erros = _validate_upload_df(df_upload)
+
+                if not df_erros.empty:
+                    st.error(f"❌ Foram encontrados {len(df_erros)} erros no arquivo.")
+                    st.dataframe(df_erros, use_container_width=True, height=260)
+                    _download_df(df_erros, "erros_validacao_importacao.csv")
+                else:
+                    st.success("✅ Validação OK (sem erros).")
+                
+                insere_prev, atualiza_prev = _resolve_import_plan(_supabase, df_norm, modo_importacao)
+                cprev1, cprev2, cprev3 = st.columns(3)
+                cprev1.metric("Registros no arquivo", len(df_norm))
+                cprev2.metric("Previsão inserir", int(insere_prev))
+                cprev3.metric("Previsão atualizar", int(atualiza_prev))
+                
+                if modo_simulacao:
+                    st.info("🔎 Modo simulação ativado: nada será gravado no banco.")
+                    st.dataframe(df_norm.head(30), use_container_width=True, height=320)
+                    st.stop()
 
                 if st.button("🚀 Importar Dados", type="primary", use_container_width=True):
                     with st.spinner("Processando importação..."):
@@ -546,7 +565,7 @@ def exibir_gestao_pedidos(_supabase):
                         progress_bar = st.progress(0)
                         status_txt = st.empty()
 
-                        for idx, row in df_upload.iterrows():
+                        for idx, row in norm.iterrows():
                             try:
                                 fornecedor_id = None
 
