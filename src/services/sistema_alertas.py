@@ -796,26 +796,3 @@ def exibir_alertas_completo(alertas: dict, formatar_moeda_br):
         else:
             st.success("✅ Todos os fornecedores com boa performance!")
 
-def exibir_resumo_alertas_dashboard(alertas):
-    """Exibe resumo de alertas no dashboard principal"""
-    
-    if alertas['total'] > 0:
-        st.warning(f"⚠️ **Atenção:** Você tem {alertas['total']} alerta(s) que requerem atenção!")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if alertas['pedidos_atrasados']:
-                st.error(f"🔴 {len(alertas['pedidos_atrasados'])} pedido(s) atrasado(s)")
-        
-        with col2:
-            if alertas['pedidos_vencendo']:
-                st.warning(f"⏰ {len(alertas['pedidos_vencendo'])} vencendo em 3 dias")
-        
-        with col3:
-            if alertas['pedidos_criticos']:
-                st.warning(f"🚨 {len(alertas['pedidos_criticos'])} pedido(s) crítico(s)")
-        
-        if st.button("🔔 Ver Todos os Alertas", use_container_width=True):
-            st.session_state.pagina_alertas = True
-            st.rerun()
