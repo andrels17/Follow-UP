@@ -422,6 +422,93 @@ def exibir_gestao_pedidos(_supabase):
         )
 
         st.markdown("---")
+        with st.expander("🗑️ Ferramentas de Limpeza de Banco", expanded=False):
+            st.warning("⚠️ **ATENÇÃO:** Esta ferramenta permite limpar completamente o banco de dados de pedidos. Use com extremo cuidado!")
+            
+            col_limpar1, col_limpar2 = st.columns([3, 1])
+            
+            with col_limpar1:
+                st.markdown("""
+                **Quando usar:**
+                - Antes de importar uma nova base completa de dados
+                - Para resetar o sistema durante testes
+                - Para corrigir erros massivos de dados
+                
+                **O que será deletado:**
+                - ✅ Todos os pedidos existentes no banco
+                - ✅ Histórico e registros antigos
+                - ❌ **NÃO** afeta fornecedores, usuários ou configurações
+                """)
+            
+            with col_limpar2:
+                confirmacao_limpeza = st.checkbox(
+                    "Confirmo que entendo os riscos",
+                    key="confirmar_limpeza_banco",
+                    help="Marque esta caixa para habilitar o botão de limpeza"
+                )
+            
+            if confirmacao_limpeza:
+                col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+                
+                with col_btn2:
+                    if st.button("🗑️ LIMPAR BANCO DE DADOS", type="primary", use_container_width=True):
+                        # Confirmação final com input de texto
+                        confirmacao_final = st.text_input(
+                            "Digite 'CONFIRMAR' para prosseguir com a limpeza:",
+                            key="confirmacao_texto_limpeza"
+                        )
+                        
+                        if confirmacao_final == "CONFIRMAR":
+                            try:
+                                with st.spinner("🗑️ Limpando banco de dados..."):
+                                    # Contar registros antes
+                                    try:
+                                        count_antes = _supabase.table("pedidos").select("id", count="exact").execute()
+                                        total_antes = count_antes.count if hasattr(count_antes, 'count') else 0
+                                    except:
+                                        total_antes = 0
+                                    
+                                    # Executar limpeza
+                                    _supabase.table("pedidos").delete().neq(
+                                        "id", "00000000-0000-0000-0000-000000000000"
+                                    ).execute()
+                                    
+                                    # Limpar cache
+                                    st.cache_data.clear()
+                                    
+                                    # Registrar auditoria
+                                    try:
+                                        ba.registrar_acao(
+                                            _supabase,
+                                            st.session_state.usuario.get("email"),
+                                            "limpar_banco",
+                                            {"registros_deletados": total_antes}
+                                        )
+                                    except:
+                                        pass
+                                    
+                                    st.success(f"✅ Banco limpo com sucesso! {total_antes} registros foram removidos.")
+                                    st.balloons()
+                                    
+                                    # Limpar confirmação
+                                    if 'confirmacao_texto_limpeza' in st.session_state:
+                                        del st.session_state['confirmacao_texto_limpeza']
+                                    
+                                    # Esperar 2 segundos e recarregar
+                                    import time
+                                    time.sleep(2)
+                                    st.rerun()
+                                    
+                            except Exception as e_limpeza:
+                                st.error(f"❌ Erro ao limpar banco: {e_limpeza}")
+                                st.error("Por favor, tente novamente ou contate o administrador.")
+                        
+                        elif confirmacao_final and confirmacao_final != "CONFIRMAR":
+                            st.warning("⚠️ Texto de confirmação incorreto. Digite exatamente 'CONFIRMAR' (em maiúsculas).")
+            else:
+                st.info("ℹ️ Marque a caixa de confirmação acima para habilitar a limpeza do banco.")
+
+        st.markdown("---")
 
         arquivo_upload = st.file_uploader(
             "Selecione o arquivo Excel ou CSV",
@@ -473,10 +560,32 @@ def exibir_gestao_pedidos(_supabase):
 
                 with col4:
                     limpar_antes = st.checkbox(
-                        "🗑️ Limpar banco",
+                        "🗑️ Limpar banco antes da importação",
                         value=False,
-                        help="⚠️ Remove todos os pedidos antes da importação (cuidado!).",
+                        help="⚠️ Remove todos os pedidos existentes ANTES de importar os novos dados.",
+                        key="limpar_antes_upload"
                     )
+
+                if limpar_antes:
+                    st.error(
+                        "🚨 **ATENÇÃO CRÍTICA:** Ao marcar esta opção, TODOS os pedidos existentes "
+                        "serão **PERMANENTEMENTE DELETADOS** antes da importação dos novos dados. "
+                        "Esta ação **NÃO PODE SER DESFEITA**!"
+                    )
+                    
+                    # Adicionar confirmação extra
+                    confirmar_delecao = st.text_input(
+                        "Digite 'LIMPAR' para confirmar a exclusão de todos os dados:",
+                        key="confirmar_delecao_upload"
+                    )
+                    
+                    if confirmar_delecao != "LIMPAR":
+                        st.warning("⚠️ Você precisa digitar 'LIMPAR' para habilitar a importação com limpeza prévia.")
+                        # Desabilitar o botão de importação se não confirmou
+                        if 'pode_importar_com_limpeza' in st.session_state:
+                            del st.session_state['pode_importar_com_limpeza']
+                    else:
+                        st.session_state['pode_importar_com_limpeza'] = True
 
                 if limpar_antes:
                     st.warning(
@@ -536,7 +645,14 @@ def exibir_gestao_pedidos(_supabase):
                     st.dataframe(df_norm.head(30), use_container_width=True, height=320)
                     st.stop()
 
-                if st.button("🚀 Importar Dados", type="primary", use_container_width=True):
+                if limpar_antes:
+                    pode_importar = st.session_state.get('pode_importar_com_limpeza', False)
+
+                if st.button("🚀 Importar Dados", type="primary", use_container_width=True, disabled=not pode_importar):
+                    if not pode_importar:
+                        st.error("⚠️ Confirme a limpeza do banco digitando 'LIMPAR' antes de importar.")
+                        st.stop()
+                    
                     with st.spinner("Processando importação..."):
 
                         # ----------------------------
