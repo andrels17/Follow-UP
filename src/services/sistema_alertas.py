@@ -4,121 +4,182 @@ import re
 import html
 from datetime import datetime, timedelta
 
-def calcular_alertas(df_pedidos):
-    """Calcula todos os tipos de alertas do sistema"""
-    
+def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | None = None):
+    """Calcula todos os tipos de alertas do sistema.
+
+    Compatível com chamadas antigas (apenas df_pedidos) e novas (df_pedidos, df_fornecedores).
+    Regra de vencimento/atraso: previsao_entrega > prazo_entrega > data_oc + 30 dias.
+    """
     hoje = pd.Timestamp.now().normalize()
-    
+
     alertas = {
-        'pedidos_atrasados': [],
-        'pedidos_vencendo': [],
-        'fornecedores_baixa_performance': [],
-        'pedidos_criticos': [],
-        'total': 0
+        "pedidos_atrasados": [],
+        "pedidos_vencendo": [],
+        "fornecedores_baixa_performance": [],
+        "pedidos_criticos": [],
+        "total": 0,
     }
-    
-    if df_pedidos.empty:
+
+    if df_pedidos is None or df_pedidos.empty:
         return alertas
-    
-    # OTIMIZAÇÃO: Converter datas UMA VEZ antes dos loops
-    df_pedidos = df_pedidos.copy()
-    df_pedidos['previsao_dt'] = pd.to_datetime(df_pedidos['previsao_entrega'], errors='coerce')
-    
-    # 1. Pedidos Atrasados
-    df_atrasados = df_pedidos[
-        (df_pedidos['entregue'] == False) & 
-        (df_pedidos['previsao_dt'] < hoje) &
-        (df_pedidos['previsao_dt'].notna())
-    ]
-    
-    for _, pedido in df_atrasados.iterrows():
-        dias_atraso = (hoje - pedido['previsao_dt']).days
-        alertas['pedidos_atrasados'].append({
-            'id': pedido.get('id'),
-            'nr_oc': pedido.get('nr_oc'),
-            'descricao': pedido.get('descricao', ''),
-            'fornecedor': pedido.get('fornecedor_nome', 'N/A'),
-            'dias_atraso': dias_atraso,
-            'valor': pedido.get('valor_total', 0),
-            'departamento': pedido.get('departamento', 'N/A')
-        })
-    
-    # 2. Pedidos Vencendo (próximos 3 dias)
+
+    df = df_pedidos.copy()
+
+    # Garantir tipos
+    if "entregue" in df.columns:
+        # pode vir como bool, int, str; normalizar
+        df["entregue"] = df["entregue"].astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+    else:
+        df["entregue"] = False
+
+    if "qtde_pendente" in df.columns:
+        df["_qtd_pendente"] = pd.to_numeric(df["qtde_pendente"], errors="coerce").fillna(0)
+    else:
+        df["_qtd_pendente"] = 0
+
+    # Pendente: não entregue OU existe quantidade pendente
+    df["_pendente"] = (~df["entregue"]) | (df["_qtd_pendente"] > 0)
+
+    # Valores
+    if "valor_total" in df.columns:
+        df["_valor_total"] = pd.to_numeric(df["valor_total"], errors="coerce").fillna(0.0)
+    else:
+        df["_valor_total"] = 0.0
+
+    # Datas (dayfirst para pt-BR)
+    def _dt(col: str) -> pd.Series:
+        return pd.to_datetime(df[col], errors="coerce", dayfirst=True) if col in df.columns else pd.Series([pd.NaT] * len(df))
+
+    data_oc = _dt("data_oc")
+    prev = _dt("previsao_entrega")
+    prazo = _dt("prazo_entrega")
+
+    # Vencimento / data de referência
+    due = prev.combine_first(prazo)
+    # fallback: data_oc + 30 dias quando não houver previsão/prazo
+    fallback_due = data_oc + pd.to_timedelta(30, unit="D")
+    due = due.combine_first(fallback_due)
+
+    df["_due"] = due
+
+    # Atraso calculado (não depende de coluna 'atrasado')
+    df["_atrasado"] = df["_pendente"] & df["_due"].notna() & (df["_due"] < hoje)
+
+    # Enriquecer fornecedor
+    if "fornecedor_id" in df.columns:
+        df["fornecedor_id"] = df["fornecedor_id"].astype(str)
+    else:
+        df["fornecedor_id"] = ""
+
+    if df_fornecedores is not None and not df_fornecedores.empty and "id" in df_fornecedores.columns:
+        df_f = df_fornecedores.copy()
+        df_f["id"] = df_f["id"].astype(str)
+        nome_col = "nome_fantasia" if "nome_fantasia" in df_f.columns else ("nome" if "nome" in df_f.columns else None)
+        cols_keep = ["id"] + ([nome_col] if nome_col else [])
+        df = df.merge(df_f[cols_keep], left_on="fornecedor_id", right_on="id", how="left")
+        if nome_col:
+            df["fornecedor_nome"] = df[nome_col]
+        else:
+            df["fornecedor_nome"] = pd.NA
+        df["fornecedor_nome"] = df["fornecedor_nome"].fillna(df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A"))
+    else:
+        df["fornecedor_nome"] = df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A")
+
+    # ============================
+    # 1) Pedidos Atrasados
+    # ============================
+    df_atrasados = df[df["_atrasado"]].copy()
+    if not df_atrasados.empty:
+        dias_atraso = (hoje - df_atrasados["_due"]).dt.days
+        for _, pedido in df_atrasados.iterrows():
+            alertas["pedidos_atrasados"].append({
+                "id": pedido.get("id"),
+                "nr_oc": pedido.get("nr_oc"),
+                "descricao": pedido.get("descricao", ""),
+                "fornecedor": pedido.get("fornecedor_nome", "N/A"),
+                "dias_atraso": int((hoje - pedido.get("_due")).days) if pd.notna(pedido.get("_due")) else 0,
+                "valor": float(pedido.get("_valor_total", 0.0)),
+                "departamento": pedido.get("departamento", "N/A"),
+            })
+
+    # ============================
+    # 2) Pedidos Vencendo (próximos 3 dias)
+    # ============================
     data_limite = hoje + timedelta(days=3)
-    df_vencendo = df_pedidos[
-        (df_pedidos['entregue'] == False) & 
-        (df_pedidos['previsao_dt'] >= hoje) &
-        (df_pedidos['previsao_dt'] <= data_limite) &
-        (df_pedidos['previsao_dt'].notna())
-    ]
-    
-    for _, pedido in df_vencendo.iterrows():
-        dias_restantes = (pedido['previsao_dt'] - hoje).days
-        alertas['pedidos_vencendo'].append({
-            'id': pedido.get('id'),
-            'nr_oc': pedido.get('nr_oc'),
-            'descricao': pedido.get('descricao', ''),
-            'fornecedor': pedido.get('fornecedor_nome', 'N/A'),
-            'dias_restantes': dias_restantes,
-            'valor': pedido.get('valor_total', 0),
-            'previsao': pedido.get('previsao_entrega')
-        })
-    
-    # 3. Fornecedores com Baixa Performance
-    if not df_pedidos.empty:
-        df_fornecedores_stats = df_pedidos[df_pedidos['fornecedor_nome'].notna()].groupby('fornecedor_nome').agg({
-            'id': 'count',
-            'entregue': 'sum',
-            'atrasado': 'sum'
-        }).reset_index()
-        
-        df_fornecedores_stats.columns = ['fornecedor', 'total_pedidos', 'entregues', 'atrasados']
-        df_fornecedores_stats['taxa_sucesso'] = (
-            (df_fornecedores_stats['entregues'] - df_fornecedores_stats['atrasados']) / 
-            df_fornecedores_stats['total_pedidos'] * 100
-        ).fillna(0)
-        
-        df_baixa_perf = df_fornecedores_stats[
-            (df_fornecedores_stats['taxa_sucesso'] < 70) & 
-            (df_fornecedores_stats['total_pedidos'] >= 5)
-        ]
-        
-        for _, fornecedor in df_baixa_perf.iterrows():
-            alertas['fornecedores_baixa_performance'].append({
-                'fornecedor': fornecedor['fornecedor'],
-                'taxa_sucesso': fornecedor['taxa_sucesso'],
-                'total_pedidos': fornecedor['total_pedidos'],
-                'atrasados': fornecedor['atrasados']
+    df_vencendo = df[
+        df["_pendente"] &
+        df["_due"].notna() &
+        (df["_due"] >= hoje) &
+        (df["_due"] <= data_limite)
+    ].copy()
+
+    if not df_vencendo.empty:
+        for _, pedido in df_vencendo.iterrows():
+            dias_restantes = int((pedido.get("_due") - hoje).days) if pd.notna(pedido.get("_due")) else 0
+            alertas["pedidos_vencendo"].append({
+                "id": pedido.get("id"),
+                "nr_oc": pedido.get("nr_oc"),
+                "descricao": pedido.get("descricao", ""),
+                "fornecedor": pedido.get("fornecedor_nome", "N/A"),
+                "dias_restantes": dias_restantes,
+                "valor": float(pedido.get("_valor_total", 0.0)),
+                "previsao": pedido.get("previsao_entrega") or pedido.get("prazo_entrega"),
             })
-    
-    # 4. Pedidos Críticos
-    if not df_pedidos.empty and 'valor_total' in df_pedidos.columns:
-        valor_critico = df_pedidos['valor_total'].quantile(0.75)
-        df_criticos = df_pedidos[
-            (df_pedidos['entregue'] == False) &
-            (df_pedidos['valor_total'] >= valor_critico) &
-            (df_pedidos['previsao_dt'] <= data_limite) &
-            (df_pedidos['previsao_dt'].notna())
-        ]
-        
+
+    # ============================
+    # 3) Fornecedores com Baixa Performance
+    # ============================
+    # Taxa de sucesso: entregas no prazo / total (aproximação: entregue sem atraso)
+    if "fornecedor_nome" in df.columns and df["fornecedor_nome"].notna().any():
+        grp = df.groupby("fornecedor_nome", dropna=False).agg(
+            total_pedidos=("id", "count"),
+            entregues=("entregue", "sum"),
+            atrasados=("_atrasado", "sum"),
+        ).reset_index()
+
+        # (entregues - atrasados) aproxima "entregues no prazo"
+        grp["taxa_sucesso"] = ((grp["entregues"] - grp["atrasados"]) / grp["total_pedidos"] * 100).fillna(0)
+
+        baixa = grp[(grp["taxa_sucesso"] < 70) & (grp["total_pedidos"] >= 5)]
+        for _, f in baixa.iterrows():
+            alertas["fornecedores_baixa_performance"].append({
+                "fornecedor": f["fornecedor_nome"],
+                "taxa_sucesso": float(f["taxa_sucesso"]),
+                "total_pedidos": int(f["total_pedidos"]),
+                "atrasados": int(f["atrasados"]),
+            })
+
+    # ============================
+    # 4) Pedidos Críticos (Alto valor + urgente)
+    # ============================
+    if "_valor_total" in df.columns:
+        valor_critico = df["_valor_total"].quantile(0.75) if len(df) >= 4 else df["_valor_total"].max()
+        df_criticos = df[
+            df["_pendente"] &
+            (df["_valor_total"] >= float(valor_critico)) &
+            df["_due"].notna() &
+            (df["_due"] <= data_limite)
+        ].copy()
+
         for _, pedido in df_criticos.iterrows():
-            alertas['pedidos_criticos'].append({
-                'id': pedido.get('id'),
-                'nr_oc': pedido.get('nr_oc'),
-                'descricao': pedido.get('descricao', ''),
-                'valor': pedido.get('valor_total', 0),
-                'previsao': pedido.get('previsao_entrega'),
-                'departamento': pedido.get('departamento', 'N/A')
+            alertas["pedidos_criticos"].append({
+                "id": pedido.get("id"),
+                "nr_oc": pedido.get("nr_oc"),
+                "descricao": pedido.get("descricao", ""),
+                "valor": float(pedido.get("_valor_total", 0.0)),
+                "previsao": pedido.get("previsao_entrega") or pedido.get("prazo_entrega"),
+                "departamento": pedido.get("departamento", "N/A"),
+                "fornecedor": pedido.get("fornecedor_nome", "N/A"),
             })
-    
-    # Total de alertas
-    alertas['total'] = (
-        len(alertas['pedidos_atrasados']) +
-        len(alertas['pedidos_vencendo']) +
-        len(alertas['fornecedores_baixa_performance']) +
-        len(alertas['pedidos_criticos'])
+
+    # Total
+    alertas["total"] = (
+        len(alertas["pedidos_atrasados"])
+        + len(alertas["pedidos_vencendo"])
+        + len(alertas["fornecedores_baixa_performance"])
+        + len(alertas["pedidos_criticos"])
     )
-    
+
     return alertas
 
 def limpar_html_completo(value, max_length=None, default='N/A'):
@@ -386,7 +447,7 @@ def exibir_painel_alertas(alertas, formatar_moeda_br, df_pedidos_original=None):
     
     with col4:
         st.metric(
-            "📉 Fornecedores problema",
+            "📉 Fornecedores Problema",
             len(alertas['fornecedores_baixa_performance'])
         )
     
