@@ -504,51 +504,51 @@ def exibir_ficha_material(_supabase):
                             materiais = materiais.sort_values(["Atrasados", "Pendentes", "Valor", "Pedidos"], ascending=[False, False, False, False])
 
                             st.caption(f"Mostrando {len(materiais)} material(is) • {len(df_eq_filtrado)} pedido(s) • Critério: atrasados → pendentes → valor")
-max_rows = st.selectbox("Mostrar", [10, 20, 50, 100], index=1, key="limite_eq_boxes")
-for idx, row in materiais.head(int(max_rows)).iterrows():
-    atras = int(row.get("Atrasados", 0))
-    pend = int(row.get("Pendentes", 0))
-    severity = "critical" if atras > 0 else ("warning" if pend > 0 else "ok")
-
-    cod = row.get("cod_material") if "cod_material" in materiais.columns else None
-    desc = row.get("descricao", "")
-
-    titulo = f"{desc}"
-    if pd.notna(cod) and str(cod).strip():
-        titulo = f"{desc}  ·  ({cod})"
-
-    chips = []
-    if atras > 0:
-        chips.append("🔴 Atrasado")
-    if pend > 0:
-        chips.append("⏳ Pendente")
-
-    card_html = f"""
-    <div class="fm-card {severity}">
-      <div class="fm-title">{titulo}</div>
-      <div class="fm-sub">{(" • ".join(chips)) if chips else "🟢 Dentro do prazo"}</div>
-      <div class="fm-kpis">
-        <div class="fm-kpi">Pedidos<b>{int(row.get("Pedidos", 0))}</b></div>
-        <div class="fm-kpi">Pendências<b>{pend}</b></div>
-        <div class="fm-kpi">Valor<b>{formatar_moeda_br(float(row.get("Valor", 0.0)))}</b></div>
-      </div>
-    </div>
-    """
-
-    c_left, c_btn = st.columns([6, 1])
-    with c_left:
-        st.markdown(card_html, unsafe_allow_html=True)
-    with c_btn:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Ver Ficha", key=f"eq_{idx}"):
-            st.session_state["material_fixo"] = {"cod": cod, "desc": desc}
-            st.session_state["tipo_busca_ficha"] = "equipamento"
-            st.session_state["equipamento_ctx"] = equipamento_selecionado
-            st.session_state["departamento_ctx"] = ""
-            st.session_state["modo_ficha_material"] = True
-            st.rerun()
-
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                            max_rows = st.selectbox("Mostrar", [10, 20, 50, 100], index=1, key="limite_eq_boxes")
+                            for idx, row in materiais.head(int(max_rows)).iterrows():
+                                atras = int(row.get("Atrasados", 0))
+                                pend = int(row.get("Pendentes", 0))
+                                severity = "critical" if atras > 0 else ("warning" if pend > 0 else "ok")
+                                
+                                cod = row.get("cod_material") if "cod_material" in materiais.columns else None
+                                desc = row.get("descricao", "")
+                                
+                                titulo = f"{desc}"
+                                if pd.notna(cod) and str(cod).strip():
+                                    titulo = f"{desc}  ·  ({cod})"
+                                
+                                chips = []
+                                if atras > 0:
+                                    chips.append("🔴 Atrasado")
+                                if pend > 0:
+                                    chips.append("⏳ Pendente")
+                                
+                                card_html = f"""
+                                <div class="fm-card {severity}">
+                                  <div class="fm-title">{titulo}</div>
+                                  <div class="fm-sub">{(" • ".join(chips)) if chips else "🟢 Dentro do prazo"}</div>
+                                  <div class="fm-kpis">
+                                    <div class="fm-kpi">Pedidos<b>{int(row.get("Pedidos", 0))}</b></div>
+                                    <div class="fm-kpi">Pendências<b>{pend}</b></div>
+                                    <div class="fm-kpi">Valor<b>{formatar_moeda_br(float(row.get("Valor", 0.0)))}</b></div>
+                                  </div>
+                                </div>
+                                """
+                                
+                                c_left, c_btn = st.columns([6, 1])
+                                with c_left:
+                                    st.markdown(card_html, unsafe_allow_html=True)
+                                with c_btn:
+                                    st.markdown("<br>", unsafe_allow_html=True)
+                                    if st.button("Ver Ficha", key=f"eq_{idx}"):
+                                        st.session_state["material_fixo"] = {"cod": cod, "desc": desc}
+                                        st.session_state["tipo_busca_ficha"] = "equipamento"
+                                        st.session_state["equipamento_ctx"] = equipamento_selecionado
+                                        st.session_state["departamento_ctx"] = ""
+                                        st.session_state["modo_ficha_material"] = True
+                                        st.rerun()
+                                
+                                st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
         # ============================================================
         # TAB 3: BUSCA POR DEPARTAMENTO (BOXES + FOLLOW-UP)
