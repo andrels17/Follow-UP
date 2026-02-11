@@ -103,11 +103,6 @@ def _coerce_date(x):
 
 
 def _validate_upload_df(df_upload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Retorna (df_limpo, df_erros).
-    - df_limpo: dados normalizados prontos para importação (ainda sem fornecedor_id resolvido)
-    - df_erros: linhas com erros (linha do arquivo + erro)
-    """
     if df_upload is None or df_upload.empty:
         return df_upload, pd.DataFrame([{"linha": "-", "erro": "Arquivo vazio"}])
 
@@ -168,9 +163,17 @@ def _validate_upload_df(df_upload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
         for dc in ["data_solicitacao", "data_oc", "previsao_entrega"]:
             if dc in df_upload.columns:
                 raw = df_upload.iloc[i].get(dc)
-                if raw is not None and not (isinstance(raw, float) and pd.isna(raw)):
-                    if r.get(dc) is None:
-                        erros.append({"linha": linha, "erro": f"Data inválida em {dc}: {raw}"})
+
+                # considera vazio se for None, NaN, NaT, string vazia
+                vazio = (
+                    raw is None
+                    or (isinstance(raw, float) and pd.isna(raw))
+                    or (isinstance(raw, pd.Timestamp) and pd.isna(raw))
+                    or (str(raw).strip().lower() in ["", "nat", "none", "nan"])
+                )
+
+                if (not vazio) and (r.get(dc) is None):
+                    erros.append({"linha": linha, "erro": f"Data inválida em {dc}: {raw}"})
 
         # fornecedor: se informado, precisa ser int
         if "cod_fornecedor" in df.columns and pd.notna(r.get("cod_fornecedor")):
@@ -178,6 +181,7 @@ def _validate_upload_df(df_upload: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
                 int(r.get("cod_fornecedor"))
             except Exception:
                 erros.append({"linha": linha, "erro": f"cod_fornecedor inválido: {r.get('cod_fornecedor')}"})
+    
 
     df_erros = pd.DataFrame(erros) if erros else pd.DataFrame(columns=["linha", "erro"])
     return df, df_erros
@@ -451,6 +455,7 @@ def exibir_gestao_pedidos(_supabase):
                         "Modo de Importação",
                         ["Adicionar novos pedidos", "Atualizar pedidos existentes (por N° OC)"],
                     )
+                    pular_duplicados = st.checkbox("⛔ Pular pedidos com OC já existente", value=True)
 
                 with col2:
                     criar_fornecedores = st.checkbox(
@@ -478,6 +483,12 @@ def exibir_gestao_pedidos(_supabase):
                         "⚠️ **ATENÇÃO:** Todos os pedidos existentes serão **deletados** antes da importação. "
                         "Esta ação não pode ser desfeita!"
                     )
+                
+                if pular_duplicados and "nr_oc" in df_norm.columns and duplicados_oc > 0:
+                    df_norm = df_norm[~df_norm["nr_oc"].astype(str).str.strip().isin(existentes)]
+
+    
+                
                 df_norm, df_erros = _validate_upload_df(df_upload)
 
                 if not df_erros.empty:
@@ -497,7 +508,25 @@ def exibir_gestao_pedidos(_supabase):
                     st.info("🔎 Modo simulação ativado: nada será gravado no banco.")
                     st.dataframe(df_norm.head(30), use_container_width=True, height=320)
                     st.stop()
+                # --- Checagem de duplicidade (mesmo no modo "Adicionar") ---
+                duplicados_oc = 0
+                if "nr_oc" in df_norm.columns:
+                    ocs = df_norm["nr_oc"].dropna().astype(str).str.strip()
+                    ocs = [x for x in ocs.tolist() if x]
 
+                    if ocs:
+                        try:
+                            res = _supabase.table("pedidos").select("nr_oc").in_("nr_oc", ocs).execute()
+                            existentes = set([r["nr_oc"] for r in (res.data or []) if r.get("nr_oc")])
+                            duplicados_oc = sum(1 for oc in ocs if oc in existentes)
+                        except Exception:
+                            duplicados_oc = 0
+
+                if duplicados_oc > 0:
+                    st.warning(f"⚠️ Encontradas **{duplicados_oc}** OCs do arquivo que já existem no banco. "
+                            f"Se você importar como **Adicionar**, pode duplicar registros.")
+
+                
                 if st.button("🚀 Importar Dados", type="primary", use_container_width=True):
                     with st.spinner("Processando importação..."):
 
