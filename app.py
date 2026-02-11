@@ -44,22 +44,51 @@ def main():
 
 
     # Sidebar com informações do usuário
-        st.markdown(f"""
-        <div style="
-            background-color:#1f2937;
-            padding:12px;
-            border-radius:10px;
-            margin-bottom:10px;
-        ">
-            <div style="font-size:13px;opacity:0.8;">👤 Usuário</div>
-            <div style="font-weight:600;font-size:16px;">
-                {st.session_state.usuario['nome']}
-            </div>
-            <div style="font-size:12px;opacity:0.7;">
-                {st.session_state.usuario['perfil'].title()}
-            </div>
-        </div>
+        st.markdown("""
+        <style>
+        
+        /* Sidebar background */
+        section[data-testid="stSidebar"] {
+            background-color: #111827;
+        }
+        
+        /* Remove padding superior */
+        section[data-testid="stSidebar"] > div {
+            padding-top: 1rem;
+        }
+        
+        /* Título usuário */
+        .sidebar-user {
+            font-size: 14px;
+            opacity: 0.85;
+        }
+        
+        /* Menu radio */
+        div[role="radiogroup"] label {
+            padding: 10px 12px;
+            border-radius: 8px;
+            margin-bottom: 6px;
+        }
+        
+        div[role="radiogroup"] label:hover {
+            background-color: rgba(255,255,255,0.06);
+        }
+        
+        /* Item selecionado */
+        div[role="radiogroup"] input:checked + div {
+            background-color: #2563eb !important;
+            border-radius: 8px;
+        }
+        
+        /* Botão sair */
+        button[kind="secondary"] {
+            background-color: #1f2937;
+            border: 1px solid #374151;
+        }
+        
+        </style>
         """, unsafe_allow_html=True)
+
 
         # Badge de alertas
         if alertas["total"] > 0:
@@ -84,17 +113,20 @@ def main():
                 label_visibility="collapsed",
             )
         else:
-            pagina = st.radio(
-                "📋 Menu",
-                [
-                    "Dashboard",
-                    "🔔 Alertas e Notificações",
-                    "Consultar Pedidos",
-                    "Ficha de Material",
-                    "Mapa Geográfico",
-                ],
+            st.markdown("### 📊 Operações")
+            pagina1 = st.radio(
+                "",
+                ["Dashboard", "🔔 Alertas e Notificações", "Consultar Pedidos"],
                 label_visibility="collapsed",
             )
+            
+            st.markdown("### 🛠️ Gestão")
+            pagina2 = st.radio(
+                "",
+                ["Ficha de Material", "Gestão de Pedidos", "Mapa Geográfico"],
+                label_visibility="collapsed",
+            )
+
 
         st.markdown("---")
 
