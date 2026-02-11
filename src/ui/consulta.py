@@ -14,9 +14,6 @@ DEPARTAMENTOS_VALIDOS = [
     "Irrigação", "Reboques", "Carregadeiras"
 ]
 
-# ---------------------------
-# Helpers
-# ---------------------------
 def _make_stamp(df: pd.DataFrame, col: str = "atualizado_em") -> tuple:
     if df is None or df.empty:
         return (0, "empty")
@@ -24,7 +21,6 @@ def _make_stamp(df: pd.DataFrame, col: str = "atualizado_em") -> tuple:
     if col in df.columns:
         mx = pd.to_datetime(df[col], errors="coerce").max()
     return (len(df), str(mx) if mx is not None else "none")
-
 
 @st.cache_data(ttl=120)
 def _prepare_search(stamp: tuple, df: pd.DataFrame) -> pd.DataFrame:
@@ -57,7 +53,6 @@ def _prepare_search(stamp: tuple, df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
 def _is_atrasado(df: pd.DataFrame) -> pd.Series:
     if df is None or df.empty:
         return pd.Series([], dtype=bool)
@@ -71,7 +66,6 @@ def _is_atrasado(df: pd.DataFrame) -> pd.Series:
             status_ok = True
         return df["previsao_entrega"].notna() & (df["previsao_entrega"] < hoje) & status_ok
     return pd.Series([False] * len(df), index=df.index)
-
 
 def _apply_filters(df: pd.DataFrame, q: str, depto: str, status: str, somente_atrasados: bool) -> pd.DataFrame:
     out = df
@@ -90,11 +84,9 @@ def _apply_filters(df: pd.DataFrame, q: str, depto: str, status: str, somente_at
 
     return out
 
-
 def _download_csv(df: pd.DataFrame, filename: str):
     csv = df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
     st.download_button("⬇️ CSV", csv, file_name=filename, mime="text/csv", use_container_width=True)
-
 
 def _download_xlsx(df: pd.DataFrame, filename: str):
     """Download XLSX without requiring xlsxwriter (fallback to openpyxl)."""
@@ -116,7 +108,6 @@ def _download_xlsx(df: pd.DataFrame, filename: str):
         use_container_width=True,
     )
 
-
 def _to_label(row: pd.Series) -> str:
     nr_oc = str(row.get("nr_oc") or "").strip()
     nr_sol = str(row.get("nr_solicitacao") or "").strip()
@@ -127,6 +118,33 @@ def _to_label(row: pd.Series) -> str:
         desc = desc[:70] + "…"
     return f"OC: {nr_oc or '-'} | SOL: {nr_sol or '-'} | {stt} | {dept} — {desc}"
 
+def _find_pid_by_key(df: pd.DataFrame, key: str) -> str | None:
+    """Localiza um pedido pelo nr_oc ou nr_solicitacao (exato -> parcial)."""
+    if df is None or df.empty or not key:
+        return None
+    k = str(key).strip()
+    if not k:
+        return None
+
+    if "nr_oc" in df.columns:
+        m = df[df["nr_oc"].fillna("").astype(str).str.strip() == k]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+    if "nr_solicitacao" in df.columns:
+        m = df[df["nr_solicitacao"].fillna("").astype(str).str.strip() == k]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+
+    if "nr_oc" in df.columns:
+        m = df[df["nr_oc"].fillna("").astype(str).str.contains(k, na=False)]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+    if "nr_solicitacao" in df.columns:
+        m = df[df["nr_solicitacao"].fillna("").astype(str).str.contains(k, na=False)]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+
+    return None
 
 def exibir_consulta_pedidos(_supabase):
     st.title("🔎 Consultar Pedidos")
@@ -138,9 +156,6 @@ def exibir_consulta_pedidos(_supabase):
 
     df = _prepare_search(_make_stamp(df_raw), df_raw)
 
-    # ==================================================
-    # KPIs (conteúdo no topo)
-    # ==================================================
     atrasados = int(_is_atrasado(df).sum())
     sem_oc = int((df["status"] == "Sem OC").sum()) if "status" in df.columns else 0
     transporte = int((df["status"] == "Em Transporte").sum()) if "status" in df.columns else 0
@@ -155,9 +170,6 @@ def exibir_consulta_pedidos(_supabase):
     k4.metric("Em transporte", transporte)
     k5.metric("Entregues", entregues)
 
-    # ==================================================
-    # Atalhos (botões compactos)
-    # ==================================================
     st.caption("Atalhos rápidos")
     a1, a2, a3, a4 = st.columns([1, 1, 1, 2])
     if a1.button("📦 Ver atrasados", use_container_width=True):
@@ -176,9 +188,6 @@ def exibir_consulta_pedidos(_supabase):
 
     st.markdown("---")
 
-    # ==================================================
-    # Barra de pesquisa + filtros (no topo)
-    # ==================================================
     with st.form("filtros_topo"):
         cQ, cD, cS, cA, cP, cB = st.columns([3, 1.4, 1.2, 1.2, 1.2, 1.0])
         with cQ:
@@ -220,7 +229,6 @@ def exibir_consulta_pedidos(_supabase):
 
     df_f = _apply_filters(df, q, depto, status, somente_atrasados)
 
-    # KPIs do filtro atual
     f1, f2, f3 = st.columns(3)
     f1.metric("Resultados", int(len(df_f)))
     f2.metric("Atrasados", int(_is_atrasado(df_f).sum()))
@@ -229,15 +237,32 @@ def exibir_consulta_pedidos(_supabase):
     else:
         f3.metric("Valor total", 0)
 
-    # ==================================================
-    # AÇÕES RÁPIDAS (logo após a busca)
-    # ==================================================
     st.subheader("Ações rápidas")
-    st.caption("Selecione um pedido e use os atalhos para abrir na Gestão ou ir para a Ficha do Material.")
+    st.caption("Digite uma OC/Solicitação para localizar rápido e depois use os botões.")
 
     if df_f.empty:
         st.info("Sem resultados para os filtros atuais.")
         return
+
+    cGo1, cGo2, cGo3 = st.columns([2.2, 1, 1.8])
+    with cGo1:
+        go_key = st.text_input(
+            "Ir para OC/Solicitação",
+            value=st.session_state.get("go_key", ""),
+            placeholder="Ex: 181151 ou 433526",
+            label_visibility="collapsed",
+        )
+    with cGo2:
+        if st.button("Ir", use_container_width=True):
+            st.session_state["go_key"] = go_key
+            pid = _find_pid_by_key(df_f, go_key)
+            if pid:
+                st.session_state["consulta_selected_pid"] = pid
+                st.success("✅ Pedido localizado.")
+            else:
+                st.warning("Não encontrei essa OC/Solicitação nos resultados filtrados.")
+    with cGo3:
+        st.caption("Dica: use os filtros acima para reduzir a lista.")
 
     df_sel_base = df_f.head(5000).copy()
     options = []
@@ -294,9 +319,6 @@ def exibir_consulta_pedidos(_supabase):
 
     st.markdown("---")
 
-    # ==================================================
-    # Colunas exibidas
-    # ==================================================
     cols_default = [
         c
         for c in [
@@ -325,29 +347,40 @@ def exibir_consulta_pedidos(_supabase):
             st.warning("Selecione ao menos uma coluna para exibir.")
             return
 
-    # ==================================================
-    # Paginação + tabela
-    # ==================================================
     total_f = int(len(df_f))
     total_paginas = max(1, math.ceil(total_f / por_pagina))
-    pag = st.number_input(
-        "Página",
-        min_value=1,
-        max_value=total_paginas,
-        value=min(int(st.session_state.get("c_pag", 1)), total_paginas),
-        step=1,
-    )
-    st.session_state["c_pag"] = int(pag)
+    pag_atual = min(int(st.session_state.get("c_pag", 1)), total_paginas)
+    st.session_state["c_pag"] = pag_atual
 
-    i0 = (int(pag) - 1) * por_pagina
+    nav1, nav2, nav3, nav4, nav5 = st.columns([1, 1, 2, 1, 1])
+    with nav1:
+        if st.button("⏮️", use_container_width=True, disabled=(pag_atual <= 1)):
+            st.session_state["c_pag"] = 1
+            st.rerun()
+    with nav2:
+        if st.button("⬅️", use_container_width=True, disabled=(pag_atual <= 1)):
+            st.session_state["c_pag"] = max(1, pag_atual - 1)
+            st.rerun()
+    with nav3:
+        st.markdown(
+            f"<div style='text-align:center; padding-top: 8px;'><b>Página {pag_atual} de {total_paginas}</b></div>",
+            unsafe_allow_html=True,
+        )
+    with nav4:
+        if st.button("➡️", use_container_width=True, disabled=(pag_atual >= total_paginas)):
+            st.session_state["c_pag"] = min(total_paginas, pag_atual + 1)
+            st.rerun()
+    with nav5:
+        if st.button("⏭️", use_container_width=True, disabled=(pag_atual >= total_paginas)):
+            st.session_state["c_pag"] = total_paginas
+            st.rerun()
+
+    i0 = (int(st.session_state["c_pag"]) - 1) * por_pagina
     i1 = i0 + por_pagina
 
     st.caption(f"Mostrando {i0 + 1}–{min(i1, total_f)} de {total_f} resultados.")
     st.dataframe(df_f.iloc[i0:i1][cols_sel], use_container_width=True, height=520)
 
-    # ==================================================
-    # Export
-    # ==================================================
     st.subheader("Exportar")
     ce1, ce2 = st.columns(2)
     with ce1:
