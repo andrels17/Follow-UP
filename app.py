@@ -280,7 +280,9 @@ def main():
         exibir_gestao_usuarios(supabase)
     elif pagina == "💾 Backup":
         ba.realizar_backup_manual(supabase)
-       
+
+        st.markdown("---")
+        
         if st.button("🚪 Sair", use_container_width=True):
             try:
                 ba.registrar_acao(
