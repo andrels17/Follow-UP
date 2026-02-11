@@ -28,8 +28,15 @@ from src.ui.gestao_usuarios import exibir_gestao_usuarios
 supabase = init_supabase()
 
 
+def _safe_len(x) -> int:
+    try:
+        return int(len(x or []))
+    except Exception:
+        return 0
+
+
 def _industrial_sidebar_css() -> None:
-    """Tema corporativo industrial (dark slate + laranja) + animações suaves."""
+    """Tema corporativo industrial + barra lateral laranja no item ativo + animações suaves."""
     st.markdown(
         r"""
         <style>
@@ -41,7 +48,6 @@ def _industrial_sidebar_css() -> None:
                 --fu-muted: rgba(255,255,255,0.72);
                 --fu-accent: #f59e0b;      /* industrial amber */
                 --fu-accent2: #fb923c;     /* orange */
-                --fu-blue: #2563eb;
             }
 
             section[data-testid="stSidebar"] {
@@ -69,6 +75,19 @@ def _industrial_sidebar_css() -> None:
             .fu-user-name { font-size: 16px; font-weight: 800; margin: 0; letter-spacing: .2px; }
             .fu-user-role { font-size: 12px; opacity: .75; margin: 4px 0 0 0; }
 
+            /* Mini KPIs */
+            .fu-kpi-row { display:flex; gap:8px; margin: 6px 0 12px 0; }
+            .fu-kpi {
+                flex: 1;
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 12px;
+                padding: 10px 10px;
+            }
+            .fu-kpi-title { font-size: 11px; opacity: .78; margin: 0 0 2px 0; }
+            .fu-kpi-value { font-size: 18px; font-weight: 900; margin: 0; }
+
+            /* Melhorias no Radio (menu) */
             div[role="radiogroup"] label {
                 padding: 10px 12px;
                 border-radius: 12px;
@@ -81,12 +100,15 @@ def _industrial_sidebar_css() -> None:
                 transform: translateX(2px);
                 border: 1px solid rgba(245,158,11,0.22);
             }
+
+            /* Item ativo: "barra vertical laranja" via box-shadow inset */
             div[role="radiogroup"] input:checked + div {
-                background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(37,99,235,0.18));
+                background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(255,255,255,0.04));
                 border-radius: 12px;
-                border: 1px solid rgba(245,158,11,0.35);
+                box-shadow: inset 4px 0 0 var(--fu-accent);
             }
 
+            /* Expanders (menu colapsável) */
             details {
                 background: rgba(255,255,255,0.02);
                 border: 1px solid rgba(255,255,255,0.06);
@@ -96,10 +118,11 @@ def _industrial_sidebar_css() -> None:
             }
             summary {
                 cursor: pointer;
-                font-weight: 800;
+                font-weight: 900;
                 color: var(--fu-text);
             }
 
+            /* Botões */
             button[kind="secondary"] {
                 background-color: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.12);
@@ -137,6 +160,11 @@ def main():
     alertas = sa.calcular_alertas(df_pedidos, df_fornecedores)
     total_alertas = int(alertas.get("total", 0) or 0)
 
+    # KPIs rápidos
+    atrasados = _safe_len(alertas.get("pedidos_atrasados"))
+    criticos = _safe_len(alertas.get("pedidos_criticos"))
+    vencendo = _safe_len(alertas.get("pedidos_vencendo"))
+
     _industrial_sidebar_css()
 
     with st.sidebar:
@@ -150,12 +178,27 @@ def main():
                 <div class="fu-bar"></div>
                 <p class="fu-user-name">{nome}</p>
                 <p class="fu-user-role">{perfil}</p>
+
+                <div class="fu-kpi-row">
+                    <div class="fu-kpi">
+                        <p class="fu-kpi-title">⚠️ Atrasados</p>
+                        <p class="fu-kpi-value">{atrasados}</p>
+                    </div>
+                    <div class="fu-kpi">
+                        <p class="fu-kpi-title">🚨 Críticos</p>
+                        <p class="fu-kpi-value">{criticos}</p>
+                    </div>
+                    <div class="fu-kpi">
+                        <p class="fu-kpi-title">⏰ Vencendo</p>
+                        <p class="fu-kpi-value">{vencendo}</p>
+                    </div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # Contador no topo (card)
+        # Card de alertas (quando houver)
         if total_alertas > 0:
             st.markdown(
                 f"""
@@ -185,8 +228,8 @@ def main():
         is_admin = st.session_state.usuario.get("perfil") == "admin"
         alertas_label = _label_alertas(total_alertas)
 
-        # Menu colapsável (expanders)
-        with st.expander("📊 Operações", expanded=True):
+        # Menus fechados inicialmente
+        with st.expander("📊 Operações", expanded=False):
             pagina_ops = st.radio(
                 "",
                 ["Dashboard", alertas_label, "Consultar Pedidos"],
@@ -194,7 +237,7 @@ def main():
                 key="menu_ops",
             )
 
-        with st.expander("🛠️ Gestão", expanded=is_admin):
+        with st.expander("🛠️ Gestão", expanded=False):
             if is_admin:
                 pagina_gestao = st.radio(
                     "",
@@ -233,7 +276,6 @@ def main():
         st.caption("© Follow-up de Compras v3.0")
         st.caption("Criado por André Luis e Yasmim Lima")
 
-    # Normaliza label de alertas
     if pagina == alertas_label:
         pagina = "🔔 Alertas e Notificações"
 
