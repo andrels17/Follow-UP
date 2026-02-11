@@ -88,12 +88,19 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
         df_f = df_fornecedores.copy()
         df_f["id"] = df_f["id"].astype(str)
 
-        # escolher melhor coluna de nome
-        nome_col = None
-        if "nome_fantasia" in df_f.columns:
-            nome_col = "nome_fantasia"
-        elif "nome" in df_f.columns:
-            nome_col = "nome"
+        
+        df_f.columns = [c.strip().lower() for c in df_f.columns]
+
+        # escolher melhor coluna possível para nome
+        candidatas = [
+            "nome_fantasia",
+            "fantasia",
+            "nome",
+            "razao_social",
+            "razao",
+            "fornecedor",
+        ]
+        nome_col = next((c for c in candidatas if c in df_f.columns), None)
 
         cols_keep = ["id"] + ([nome_col] if nome_col else [])
 
