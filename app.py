@@ -20,7 +20,7 @@ from src.ui.dashboard import exibir_dashboard
 from src.ui.mapa import exibir_mapa
 from src.ui.consulta import exibir_consulta_pedidos
 from src.ui.gestao_pedidos import exibir_gestao_pedidos
-from src.ui.ficha_material_page import exibir_ficha_material
+from src.ui import ficha_material as fm
 from src.ui.gestao_usuarios import exibir_gestao_usuarios
 
 # Conexão (cacheada) com Supabase
