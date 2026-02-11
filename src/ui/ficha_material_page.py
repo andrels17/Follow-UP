@@ -8,6 +8,18 @@ from src.repositories.pedidos import carregar_pedidos
 from src.utils.formatting import formatar_moeda_br
 
 def exibir_ficha_material(_supabase):
+    # Ponte vinda da Consulta: pré-preenche filtros
+    tipo_pre = st.session_state.pop("fm_open_tipo", None)
+    cod_pre = st.session_state.pop("fm_open_codigo", None)
+    desc_pre = st.session_state.pop("fm_open_descricao", None)
+
+    if tipo_pre:
+        st.session_state["tipo_busca"] = tipo_pre
+    if cod_pre:
+        st.session_state["busca_texto"] = str(cod_pre)
+    elif desc_pre:
+        st.session_state["busca_texto"] = str(desc_pre)
+
     """Exibe ficha técnica completa e moderna do material"""
     
     st.title("📋 Ficha Técnica de Material")
