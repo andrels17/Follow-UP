@@ -101,6 +101,13 @@ def exibir_ficha_material(_supabase):
     col_entregue = _pick_col(df_pedidos, ["entregue", "entrega", "is_entregue"])
     col_equip = _pick_col(df_pedidos, ["cod_equipamento", "equipamento"])
     col_dep = _pick_col(df_pedidos, ["departamento", "setor"])
+
+    col_prev = _pick_col(df_pedidos, ["previsao_entrega", "previsao", "dt_previsao"])  # data prevista
+    col_prazo = _pick_col(df_pedidos, ["prazo_entrega", "prazo"])  # prazo informado
+    col_entrega_real = _pick_col(df_pedidos, ["data_entrega_real", "dt_entrega_real", "entrega_real"])  # data real
+    col_qtd_pend = _pick_col(df_pedidos, ["qtde_pendente", "qtd_pendente", "pendente"])  # quantidade pendente
+    col_oc = _pick_col(df_pedidos, ["nr_oc", "oc", "numero_oc"])  # ordem de compra
+    col_solic = _pick_col(df_pedidos, ["nr_solicitacao", "solicitacao", "nr_req"])  # solicitação
     if not modo_ficha:
 
         # ============================================================
@@ -772,91 +779,222 @@ def exibir_ficha_material(_supabase):
         # ============================================================
         # ABAS: FICHA TÉCNICA vs HISTÓRICO DETALHADO
         # ============================================================
-        tab_ficha, tab_hist = st.tabs(["📄 Ficha Técnica", "📚 Histórico Detalhado"])
 
-        with tab_ficha:
-            # Cards de KPIs existentes
-            fm.criar_cards_kpis(historico_material)
+        # ============================================================
+        # ABAS (ERP FOLLOW-UP): Acompanhamento / Histórico / Fornecedores / Entregas / Preço
+        # ============================================================
+        tab_acomp, tab_hist, tab_forn, tab_ent, tab_preco = st.tabs(
+            ["📌 Acompanhamento", "📦 Histórico", "🏷️ Fornecedores", "🚚 Entregas (SLA)", "📈 Preço & Insights"]
+        )
 
-            # KPIs novos (planejamento / gestão)
-            st.markdown("#### 🧠 Indicadores avançados")
-            k1, k2, k3 = st.columns(3)
+        # Preparar dados para cálculos de follow-up
+        df_mat = historico_material.copy()
 
-            with k1:
-                # Volatilidade de preço (desvio padrão da variação percentual)
-                volatilidade = None
-                if col_unit and col_unit in historico_material.columns:
-                    unit = pd.to_numeric(historico_material[col_unit], errors="coerce")
-                    volatilidade = float(unit.pct_change().std() * 100) if unit.notna().sum() >= 3 else None
+        # Datas-base
+        if col_data and col_data in df_mat.columns:
+            df_mat["_data_oc"] = _safe_datetime_series(df_mat[col_data])
+        else:
+            df_mat["_data_oc"] = pd.NaT
 
-                st.metric("📉 Volatilidade de Preço", f"{volatilidade:.1f}%" if volatilidade is not None else "—")
+        # Previsões/prazo e entrega real
+        df_mat["_prev"] = _safe_datetime_series(df_mat[col_prev]) if col_prev and col_prev in df_mat.columns else pd.NaT
+        df_mat["_prazo"] = _safe_datetime_series(df_mat[col_prazo]) if col_prazo and col_prazo in df_mat.columns else pd.NaT
+        df_mat["_entrega_real"] = _safe_datetime_series(df_mat[col_entrega_real]) if col_entrega_real and col_entrega_real in df_mat.columns else pd.NaT
 
-            with k2:
-                # Tempo médio entre compras (dias)
-                tempo_medio = None
-                if col_data and col_data in historico_material.columns:
-                    datas = _safe_datetime_series(historico_material[col_data]).dropna().sort_values()
-                    if len(datas) >= 3:
-                        tempo_medio = float(datas.diff().dt.days.mean())
-                st.metric("⏱️ Dias entre Compras", f"{int(tempo_medio)}" if tempo_medio is not None else "—")
+        hoje = pd.Timestamp.now().normalize()
 
-            with k3:
-                # Fornecedor mais frequente (se existir)
-                fornecedor_top = None
-                if col_fornecedor and col_fornecedor in historico_material.columns:
-                    fornecedor_top = historico_material[col_fornecedor].dropna().astype(str).value_counts().head(1)
-                    fornecedor_top = fornecedor_top.index[0] if not fornecedor_top.empty else None
-                st.metric("🏷️ Fornecedor mais frequente", fornecedor_top if fornecedor_top else "—")
+        # Due date: previsao > prazo > data_oc + 30d
+        df_mat["_due"] = df_mat["_prev"]
+        df_mat.loc[df_mat["_due"].isna(), "_due"] = df_mat.loc[df_mat["_due"].isna(), "_prazo"]
+        df_mat.loc[df_mat["_due"].isna(), "_due"] = df_mat.loc[df_mat["_due"].isna(), "_data_oc"] + pd.Timedelta(days=30)
 
-            st.markdown("<br>", unsafe_allow_html=True)
+        # Pendente: entregue False OU qtde_pendente > 0
+        if col_entregue and col_entregue in df_mat.columns:
+            pendente_flag = df_mat[col_entregue] != True
+        else:
+            pendente_flag = pd.Series([True] * len(df_mat), index=df_mat.index)
 
-            col1, col2 = st.columns([2, 1])
+        if col_qtd_pend and col_qtd_pend in df_mat.columns:
+            qtd_pend = pd.to_numeric(df_mat[col_qtd_pend], errors="coerce").fillna(0)
+            pendente_flag = pendente_flag | (qtd_pend > 0)
 
-            with col1:
-                fm.criar_grafico_evolucao_precos(historico_material)
-                st.markdown("<br>", unsafe_allow_html=True)
-                fm.criar_comparacao_visual_precos(historico_material)
+        df_mat["_pendente"] = pendente_flag
+        df_mat["_atrasado"] = df_mat["_pendente"] & df_mat["_due"].notna() & (df_mat["_due"] < hoje)
 
-            with col2:
-                fm.criar_mini_mapa_fornecedores(historico_material)
+        # Dias em aberto
+        df_mat["_dias_aberto"] = (hoje - df_mat["_data_oc"]).dt.days
 
-            st.markdown("---")
-            fm.criar_ranking_fornecedores_visual(historico_material)
+        # Valor (para KPIs)
+        if col_total and col_total in df_mat.columns:
+            df_mat["_valor_total"] = pd.to_numeric(df_mat[col_total], errors="coerce").fillna(0.0)
+        else:
+            df_mat["_valor_total"] = 0.0
 
-            st.markdown("---")
-            fm.criar_timeline_compras(historico_material)
+        # Score de criticidade simples (follow-up)
+        qtd_atrasados = int(df_mat["_atrasado"].sum())
+        valor_pendente = float(df_mat.loc[df_mat["_pendente"], "_valor_total"].sum())
+        fornecedor_unico = 0
+        if col_fornecedor and col_fornecedor in df_mat.columns:
+            fornecedor_unico = int(df_mat[col_fornecedor].dropna().nunique() == 1)
 
-            st.markdown("---")
-            _call_insights_automaticos(historico_material, material_atual)
+        score = 0
+        if qtd_atrasados > 0:
+            score += 3
+        if valor_pendente >= 50000:
+            score += 2
+        elif valor_pendente >= 15000:
+            score += 1
+        if fornecedor_unico:
+            score += 2
+        if len(df_mat) >= 15:
+            score += 1
 
-        with tab_hist:
-            st.markdown("### 📚 Histórico Detalhado")
-            st.caption("Aqui você consegue auditar compras, comparar condições e exportar para análise externa.")
+        if score >= 5:
+            nivel = "🔴 CRÍTICO"
+        elif score >= 3:
+            nivel = "🟡 ATENÇÃO"
+        else:
+            nivel = "🟢 SAUDÁVEL"
 
-            # Tabela compacta e útil
-            cols_preferidas = []
-            for c in [col_data, col_qtd, col_unit, col_total, col_fornecedor, col_status, col_entregue, col_equip, col_dep]:
-                if c and c in historico_material.columns and c not in cols_preferidas:
-                    cols_preferidas.append(c)
+        # KPI bar (ERP)
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("📦 Pedidos", int(len(df_mat)))
+        k2.metric("⏳ Pendentes", int(df_mat["_pendente"].sum()))
+        k3.metric("🔴 Atrasados", qtd_atrasados)
+        k4.metric("💰 Valor pendente", formatar_moeda_br(valor_pendente))
+        mais_antigo = df_mat.loc[df_mat["_pendente"], "_dias_aberto"].max()
+        k5.metric("🧭 Mais antigo (dias)", f"{int(mais_antigo)}" if pd.notna(mais_antigo) else "—")
 
-            if not cols_preferidas:
-                cols_preferidas = historico_material.columns.tolist()
+        st.caption(f"Criticidade do follow-up: **{nivel}** • Regra de atraso: previsão > prazo > OC + 30 dias")
 
-            df_hist = historico_material.copy()
-            if col_data and col_data in df_hist.columns:
-                df_hist["_dt"] = _safe_datetime_series(df_hist[col_data])
-                df_hist = df_hist.sort_values("_dt", ascending=False).drop(columns=["_dt"], errors="ignore")
+        with tab_acomp:
+            st.markdown("### 📌 Fila de Follow-up (pedidos pendentes)")
+
+            f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.2, 1.4])
+            only_atrasados = f1.toggle("Só atrasados", value=False)
+            only_pendentes = f2.toggle("Só pendentes", value=True)
+            ordenar = f3.selectbox("Ordenar por", ["Prioridade", "Maior valor", "Mais antigo"], index=0)
+            limite = f4.selectbox("Mostrar", [20, 50, 100, 200], index=0)
+
+            df_work = df_mat.copy()
+            if only_pendentes:
+                df_work = df_work[df_work["_pendente"]]
+            if only_atrasados:
+                df_work = df_work[df_work["_atrasado"]]
+
+            # Prioridade: atrasado, maior valor, mais antigo
+            df_work["_prio_atraso"] = df_work["_atrasado"].astype(int)
+            df_work["_prio_valor"] = df_work["_valor_total"]
+            df_work["_prio_dias"] = df_work["_dias_aberto"].fillna(-1)
+
+            if ordenar == "Prioridade":
+                df_work = df_work.sort_values(
+                    ["_prio_atraso", "_prio_valor", "_prio_dias"],
+                    ascending=[False, False, False],
+                )
+            elif ordenar == "Maior valor":
+                df_work = df_work.sort_values(["_valor_total"], ascending=[False])
+            else:
+                df_work = df_work.sort_values(["_dias_aberto"], ascending=[False])
+
+            cols_show = []
+            if col_oc and col_oc in df_work.columns:
+                cols_show.append(col_oc)
+            if col_solic and col_solic in df_work.columns:
+                cols_show.append(col_solic)
+            if col_fornecedor and col_fornecedor in df_work.columns:
+                cols_show.append(col_fornecedor)
+            if col_status and col_status in df_work.columns:
+                cols_show.append(col_status)
+            if col_qtd and col_qtd in df_work.columns:
+                cols_show.append(col_qtd)
+            if col_qtd_pend and col_qtd_pend in df_work.columns:
+                cols_show.append(col_qtd_pend)
+
+            cols_show += ["_due", "_dias_aberto", "_valor_total", "_atrasado"]
+
+            df_view = df_work[cols_show].head(int(limite)).copy()
+
+            rename = {"_due": "Vencimento", "_dias_aberto": "Dias em aberto", "_valor_total": "Valor Total", "_atrasado": "Atrasado?"}
+            if col_oc:
+                rename[col_oc] = "OC"
+            if col_solic:
+                rename[col_solic] = "Solicitação"
+            if col_fornecedor:
+                rename[col_fornecedor] = "Fornecedor"
+            if col_status:
+                rename[col_status] = "Status"
+            if col_qtd:
+                rename[col_qtd] = "Qtd Sol."
+            if col_qtd_pend:
+                rename[col_qtd_pend] = "Qtd Pend."
+
+            df_view = df_view.rename(columns=rename)
 
             st.dataframe(
-                df_hist[cols_preferidas],
+                df_view,
                 use_container_width=True,
                 hide_index=True,
+                column_config={
+                    "Vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "Valor Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                    "Atrasado?": st.column_config.CheckboxColumn(),
+                },
             )
 
-            st.markdown("---")
+            st.caption("Priorize os itens **atrasados** e/ou de **maior valor** para cobrar fornecedor e destravar entrega.")
 
-            # Exportação CSV contextual
-            csv_bytes = df_hist.to_csv(index=False).encode("utf-8")
+        with tab_hist:
+            st.markdown("### 📦 Histórico do material")
+            st.caption("Auditoria e histórico completo (com filtros e exportação).")
+
+            c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
+            filtro_status = None
+            if col_status and col_status in df_mat.columns:
+                status_opts = sorted(df_mat[col_status].dropna().astype(str).unique().tolist())
+                filtro_status = c1.multiselect("Status", status_opts, default=status_opts)
+            filtro_entrega = c2.selectbox("Entrega", ["Todos", "Entregues", "Pendentes"], index=0)
+            janela = c3.selectbox("Período", ["Tudo", "Últimos 3 meses", "Últimos 6 meses", "Último ano"], index=0)
+
+            dfh = df_mat.copy()
+            if filtro_status is not None and col_status:
+                dfh = dfh[dfh[col_status].astype(str).isin(filtro_status)]
+
+            if filtro_entrega == "Entregues":
+                dfh = dfh[~dfh["_pendente"]]
+            elif filtro_entrega == "Pendentes":
+                dfh = dfh[dfh["_pendente"]]
+
+            if janela != "Tudo" and dfh["_data_oc"].notna().any():
+                if janela == "Últimos 3 meses":
+                    lim = hoje - pd.DateOffset(months=3)
+                elif janela == "Últimos 6 meses":
+                    lim = hoje - pd.DateOffset(months=6)
+                else:
+                    lim = hoje - pd.DateOffset(years=1)
+                dfh = dfh[dfh["_data_oc"] >= lim]
+
+            cols_core = []
+            for c in [col_data, col_oc, col_solic, col_status, col_fornecedor, col_qtd, col_qtd_pend, col_total, col_entregue, col_prev, col_prazo, col_entrega_real, "observacoes"]:
+                if c and c in dfh.columns and c not in cols_core:
+                    cols_core.append(c)
+
+            df_core = dfh.sort_values("_data_oc", ascending=False)
+            st.dataframe(
+                df_core[cols_core],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    col_data: st.column_config.DateColumn("Data OC", format="DD/MM/YYYY") if col_data else None,
+                    col_total: st.column_config.NumberColumn("Valor Total", format="R$ %.2f") if col_total else None,
+                },
+            )
+
+            with st.expander("🔎 Ver colunas completas (auditoria)"):
+                cols_all = [c for c in historico_material.columns if c in dfh.columns]
+                st.dataframe(df_core[cols_all], use_container_width=True, hide_index=True)
+
+            csv_bytes = df_core.drop(columns=[c for c in df_core.columns if c.startswith("_")], errors="ignore").to_csv(index=False).encode("utf-8")
             nome = str(cod_show or "material").replace(" ", "_")
             st.download_button(
                 "📥 Exportar histórico do material (CSV)",
@@ -866,13 +1004,104 @@ def exibir_ficha_material(_supabase):
                 use_container_width=True,
             )
 
-            # Botão de "desfixar"
-            if st.button("🧹 Limpar material selecionado", use_container_width=True):
-                st.session_state.pop("material_fixo", None)
-                st.session_state.pop("tipo_busca_ficha", None)
-                st.session_state.pop("equipamento_ctx", None)
-                st.session_state.pop("departamento_ctx", None)
-                st.rerun()
+        with tab_forn:
+            st.markdown("### 🏷️ Análise de fornecedores (follow-up)")
+            if not (col_fornecedor and col_fornecedor in df_mat.columns):
+                st.info("ℹ️ Não encontrei coluna de fornecedor nos pedidos para este material.")
+            else:
+                df_f = df_mat.copy()
+                df_f["Fornecedor"] = df_f[col_fornecedor].astype(str)
+
+                resumo = (
+                    df_f.groupby("Fornecedor", dropna=False)
+                    .agg(
+                        Pedidos=("id", "count") if "id" in df_f.columns else ("Fornecedor", "size"),
+                        Pendentes=("_pendente", "sum"),
+                        Atrasados=("_atrasado", "sum"),
+                        Valor=("_valor_total", "sum"),
+                        DiasMedio=("_dias_aberto", "mean"),
+                    )
+                    .reset_index()
+                )
+                resumo["% Atraso"] = (resumo["Atrasados"] / resumo["Pedidos"]).fillna(0) * 100
+                resumo = resumo.sort_values(["Atrasados", "Pendentes", "Valor"], ascending=[False, False, False])
+
+                st.dataframe(
+                    resumo,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "DiasMedio": st.column_config.NumberColumn("Dias em aberto (média)", format="%.0f"),
+                        "% Atraso": st.column_config.NumberColumn(format="%.1f%%"),
+                    },
+                )
+
+                st.caption("Use **% Atraso** e **Pendentes** para decidir onde cobrar primeiro.")
+
+        with tab_ent:
+            st.markdown("### 🚚 Entregas e SLA")
+            st.caption("Baseado em vencimento (previsão/prazo) vs entrega real. Para pendentes, considera vencimento.")
+
+            df_ent = df_mat.copy()
+            entregues_mask = ~df_ent["_pendente"]
+            df_done = df_ent[entregues_mask & df_ent["_entrega_real"].notna() & df_ent["_due"].notna()].copy()
+
+            if df_done.empty:
+                st.info("ℹ️ Não há entregas com datas suficientes (vencimento e entrega real) para calcular SLA.")
+            else:
+                df_done["_no_prazo"] = df_done["_entrega_real"] <= df_done["_due"]
+                sla = float(df_done["_no_prazo"].mean() * 100)
+
+                atraso_dias = (df_done["_entrega_real"] - df_done["_due"]).dt.days
+                atraso_medio = float(atraso_dias[atraso_dias > 0].mean()) if (atraso_dias > 0).any() else 0.0
+
+                a1, a2, a3 = st.columns(3)
+                a1.metric("✅ SLA (no prazo)", f"{sla:.1f}%")
+                a2.metric("⏱️ Atraso médio (dias)", f"{atraso_medio:.0f}")
+                a3.metric("📦 Entregas analisadas", int(len(df_done)))
+
+                view_cols = []
+                for c in [col_oc, col_solic, col_fornecedor, col_status]:
+                    if c and c in df_done.columns:
+                        view_cols.append(c)
+                view_cols += ["_due", "_entrega_real"]
+
+                st.dataframe(
+                    df_done[view_cols].rename(columns={"_due": "Vencimento", "_entrega_real": "Entrega real"}),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                        "Entrega real": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    },
+                )
+
+        with tab_preco:
+            st.markdown("### 📈 Preço e Insights")
+
+            # Guard rails: só desenhar preço se houver dados
+            if col_unit and col_unit in historico_material.columns and pd.to_numeric(historico_material[col_unit], errors="coerce").notna().sum() >= 2:
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    fm.criar_grafico_evolucao_precos(historico_material)
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    fm.criar_comparacao_visual_precos(historico_material)
+                with col2:
+                    fm.criar_mini_mapa_fornecedores(historico_material)
+
+                st.markdown("---")
+                fm.criar_ranking_fornecedores_visual(historico_material)
+            else:
+                st.info("📊 Ainda não há histórico suficiente de preço para gráficos comparativos.")
+
+            st.markdown("---")
+            fm.criar_timeline_compras(historico_material)
+
+            st.markdown("---")
+            _call_insights_automaticos(historico_material, material_atual)
+
+
 
         st.markdown("---")
         if st.button("← Voltar para Consulta", use_container_width=True):
