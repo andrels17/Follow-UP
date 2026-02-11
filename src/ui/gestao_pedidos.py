@@ -646,10 +646,17 @@ def exibir_gestao_pedidos(_supabase):
                     st.stop()
 
                 if limpar_antes:
-                    pode_importar = st.session_state.get('pode_importar_com_limpeza', False)
-
-                if st.button("🚀 Importar Dados", type="primary", use_container_width=True, disabled=not pode_importar):
-                    if not pode_importar:
+                    pode_importar = st.session_state.get("pode_importar_com_limpeza", False)
+                else:
+                    pode_importar = True  # se não vai limpar, pode importar normalmente
+                
+                if st.button(
+                    "🚀 Importar Dados",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not pode_importar,
+                ):
+                    if limpar_antes and not pode_importar:
                         st.error("⚠️ Confirme a limpeza do banco digitando 'LIMPAR' antes de importar.")
                         st.stop()
                     
