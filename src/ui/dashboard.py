@@ -11,7 +11,6 @@ import streamlit as st
 import dashboard_avancado as da
 import exportacao_relatorios as er
 import filtros_avancados as fa
-import src.services.sistema_alertas as sa
 import backup_auditoria as ba
 
 from src.repositories.pedidos import carregar_pedidos, carregar_estatisticas_departamento
