@@ -37,9 +37,14 @@ def main():
 
     # Carregar dados para alertas
     df_pedidos = carregar_pedidos(supabase)
+    df_fornecedores = carregar_fornecedores(supabase)
+    
+    alertas = (
+        sa.calcular_alertas(df_pedidos, df_fornecedores)
+        if not df_pedidos.empty
+        else {"total": 0}
+    )
 
-    # Calcular alertas
-    alertas = sa.calcular_alertas(df_pedidos) if not df_pedidos.empty else {"total": 0}
 
     # Sidebar com informações do usuário
     with st.sidebar:
