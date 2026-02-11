@@ -870,6 +870,15 @@ def exibir_gestao_pedidos(_supabase):
         st.subheader("Editar Pedido Existente")
 
         df_pedidos = carregar_pedidos(_supabase)
+        # Ponte vinda da Consulta: pré-seleciona pedido para edição
+        pedido_pre = st.session_state.pop("gp_open_pedido_id", None)
+        if pedido_pre and not df_pedidos.empty and "id" in df_pedidos.columns:
+            try:
+                alvo = df_pedidos[df_pedidos["id"].astype(str) == str(pedido_pre)]
+                if not alvo.empty:
+                    st.session_state["edit_busca"] = str(alvo.iloc[0].get("nr_oc") or alvo.iloc[0].get("nr_solicitacao") or "")
+            except Exception:
+                pass
 
         if df_pedidos.empty:
             st.info("📭 Nenhum pedido cadastrado ainda")
