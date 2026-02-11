@@ -917,151 +917,151 @@ def exibir_gestao_pedidos(_supabase):
         else:
             st.success("✅ Pedido totalmente entregue!")
 
-with tab4:
-    st.subheader("⚡ Ações em Massa")
-    st.caption("Atualize vários pedidos de uma vez (status / previsão / fornecedor). Use filtros para selecionar o conjunto.")
-
-    df_pedidos = carregar_pedidos(_supabase)
-    if df_pedidos.empty:
-        st.info("📭 Nenhum pedido cadastrado.")
-        return
-
-    # Filtros e seleção (form para evitar rerun a cada clique)
-    with st.form("form_mass_actions"):
-        f1, f2, f3, f4 = st.columns(4)
-        with f1:
-            depto = st.selectbox("Departamento", ["Todos"] + DEPARTAMENTOS_VALIDOS, index=0)
-        with f2:
-            status_atual = st.selectbox("Status atual", ["Todos"] + STATUS_VALIDOS, index=0)
-        with f3:
-            fornecedor_txt = st.text_input("Fornecedor contém (opcional)", value="")
-        with f4:
-            busca = st.text_input("Buscar (OC/descrição)", value="")
-
-        lim = st.selectbox("Limite de seleção", [200, 500, 1000, 2000], index=1)
-
-        aplicar = st.form_submit_button("Aplicar filtros")
-
-    # aplica filtros
-    df_sel = df_pedidos.copy()
-
-    if depto != "Todos" and "departamento" in df_sel.columns:
-        df_sel = df_sel[df_sel["departamento"] == depto]
-
-    if status_atual != "Todos" and "status" in df_sel.columns:
-        df_sel = df_sel[df_sel["status"] == status_atual]
-
-    if fornecedor_txt.strip() and "fornecedor" in df_sel.columns:
-        qf = fornecedor_txt.strip().lower()
-        df_sel = df_sel[df_sel["fornecedor"].fillna("").astype(str).str.lower().str.contains(qf, na=False)]
-
-    if busca.strip():
-        qb = busca.strip().lower()
-        cols = []
-        for c in ["nr_oc", "descricao", "nr_solicitacao"]:
-            if c in df_sel.columns:
-                cols.append(df_sel[c].fillna("").astype(str).str.lower())
-        if cols:
-            m = cols[0].str.contains(qb, na=False)
-            for s in cols[1:]:
-                m = m | s.str.contains(qb, na=False)
-            df_sel = df_sel[m]
-
-    df_sel = df_sel.head(int(lim))
-
-    st.write(f"🔎 Selecionados (após filtros): **{len(df_sel)}**")
-
-    if df_sel.empty:
-        st.warning("Nenhum pedido encontrado com os filtros.")
-        return
-
-    # multiselect por ID (mais leve)
-    labels, ids = _build_pedido_labels(_make_df_stamp(df_sel), df_sel)
-    selecionados = st.multiselect(
-        "Escolha os pedidos para aplicar a ação",
-        options=ids,
-        default=[],
-        format_func=lambda pid: labels[ids.index(pid)] if pid in ids else pid,
-    )
-
-    if not selecionados:
-        st.info("Selecione pelo menos 1 pedido.")
-        return
-
-    st.markdown("---")
-    st.subheader("Ações")
-
-    a1, a2, a3 = st.columns(3)
-
-    # 1) Status em massa
-    with a1:
-        st.markdown("### 🏷️ Status")
-        novo_status = st.selectbox("Novo status", STATUS_VALIDOS, index=0, key="mass_status")
-        if st.button("Aplicar status", use_container_width=True):
-            ok, errs = _bulk_update(_supabase, selecionados, {"status": novo_status})
-            if errs:
-                st.warning(f"Atualizados: {ok}/{len(selecionados)}")
-                st.text("\n".join(errs[:30]))
-            else:
-                st.success(f"✅ Status atualizado em {ok} pedidos.")
-            try:
-                ba.registrar_acao(_supabase, st.session_state.usuario.get("email"), "mass_update_status",
-                                  {"qtd": len(selecionados), "status": novo_status})
-            except Exception:
-                pass
-            st.cache_data.clear()
-            st.rerun()
-
-    # 2) Previsão em massa
-    with a2:
-        st.markdown("### 📅 Previsão")
-        nova_prev = st.date_input("Nova previsão", value=datetime.now(), key="mass_prev")
-        if st.button("Aplicar previsão", use_container_width=True):
-            payload = {"previsao_entrega": nova_prev.isoformat()}
-            ok, errs = _bulk_update(_supabase, selecionados, payload)
-            if errs:
-                st.warning(f"Atualizados: {ok}/{len(selecionados)}")
-                st.text("\n".join(errs[:30]))
-            else:
-                st.success(f"✅ Previsão atualizada em {ok} pedidos.")
-            try:
-                ba.registrar_acao(_supabase, st.session_state.usuario.get("email"), "mass_update_previsao",
-                                  {"qtd": len(selecionados), "previsao": nova_prev.isoformat()})
-            except Exception:
-                pass
-            st.cache_data.clear()
-            st.rerun()
-
-    # 3) Fornecedor em massa
-    with a3:
-        st.markdown("### 🏭 Fornecedor")
-        df_fornecedores = carregar_fornecedores(_supabase)
-        if df_fornecedores is None or df_fornecedores.empty:
-            st.warning("Sem fornecedores cadastrados.")
-        else:
-            stamp_f = _make_df_stamp(df_fornecedores, "updated_at" if "updated_at" in df_fornecedores.columns else "id")
-            forn_opts, mapa = _build_fornecedor_options(stamp_f, df_fornecedores)
-
-            forn_sel = st.selectbox("Fornecedor", forn_opts, index=0, key="mass_forn")
-            if st.button("Aplicar fornecedor", use_container_width=True, disabled=(not forn_sel)):
+    with tab4:
+        st.subheader("⚡ Ações em Massa")
+        st.caption("Atualize vários pedidos de uma vez (status / previsão / fornecedor). Use filtros para selecionar o conjunto.")
+    
+        df_pedidos = carregar_pedidos(_supabase)
+        if df_pedidos.empty:
+            st.info("📭 Nenhum pedido cadastrado.")
+            return
+    
+        # Filtros e seleção (form para evitar rerun a cada clique)
+        with st.form("form_mass_actions"):
+            f1, f2, f3, f4 = st.columns(4)
+            with f1:
+                depto = st.selectbox("Departamento", ["Todos"] + DEPARTAMENTOS_VALIDOS, index=0)
+            with f2:
+                status_atual = st.selectbox("Status atual", ["Todos"] + STATUS_VALIDOS, index=0)
+            with f3:
+                fornecedor_txt = st.text_input("Fornecedor contém (opcional)", value="")
+            with f4:
+                busca = st.text_input("Buscar (OC/descrição)", value="")
+    
+            lim = st.selectbox("Limite de seleção", [200, 500, 1000, 2000], index=1)
+    
+            aplicar = st.form_submit_button("Aplicar filtros")
+    
+        # aplica filtros
+        df_sel = df_pedidos.copy()
+    
+        if depto != "Todos" and "departamento" in df_sel.columns:
+            df_sel = df_sel[df_sel["departamento"] == depto]
+    
+        if status_atual != "Todos" and "status" in df_sel.columns:
+            df_sel = df_sel[df_sel["status"] == status_atual]
+    
+        if fornecedor_txt.strip() and "fornecedor" in df_sel.columns:
+            qf = fornecedor_txt.strip().lower()
+            df_sel = df_sel[df_sel["fornecedor"].fillna("").astype(str).str.lower().str.contains(qf, na=False)]
+    
+        if busca.strip():
+            qb = busca.strip().lower()
+            cols = []
+            for c in ["nr_oc", "descricao", "nr_solicitacao"]:
+                if c in df_sel.columns:
+                    cols.append(df_sel[c].fillna("").astype(str).str.lower())
+            if cols:
+                m = cols[0].str.contains(qb, na=False)
+                for s in cols[1:]:
+                    m = m | s.str.contains(qb, na=False)
+                df_sel = df_sel[m]
+    
+        df_sel = df_sel.head(int(lim))
+    
+        st.write(f"🔎 Selecionados (após filtros): **{len(df_sel)}**")
+    
+        if df_sel.empty:
+            st.warning("Nenhum pedido encontrado com os filtros.")
+            return
+    
+        # multiselect por ID (mais leve)
+        labels, ids = _build_pedido_labels(_make_df_stamp(df_sel), df_sel)
+        selecionados = st.multiselect(
+            "Escolha os pedidos para aplicar a ação",
+            options=ids,
+            default=[],
+            format_func=lambda pid: labels[ids.index(pid)] if pid in ids else pid,
+        )
+    
+        if not selecionados:
+            st.info("Selecione pelo menos 1 pedido.")
+            return
+    
+        st.markdown("---")
+        st.subheader("Ações")
+    
+        a1, a2, a3 = st.columns(3)
+    
+        # 1) Status em massa
+        with a1:
+            st.markdown("### 🏷️ Status")
+            novo_status = st.selectbox("Novo status", STATUS_VALIDOS, index=0, key="mass_status")
+            if st.button("Aplicar status", use_container_width=True):
+                ok, errs = _bulk_update(_supabase, selecionados, {"status": novo_status})
+                if errs:
+                    st.warning(f"Atualizados: {ok}/{len(selecionados)}")
+                    st.text("\n".join(errs[:30]))
+                else:
+                    st.success(f"✅ Status atualizado em {ok} pedidos.")
                 try:
-                    cod = int(str(forn_sel).split(" - ")[0])
-                    forn_id = mapa.get(cod)
-                    if not forn_id:
-                        st.error("Fornecedor não encontrado no mapa.")
-                    else:
-                        ok, errs = _bulk_update(_supabase, selecionados, {"fornecedor_id": forn_id})
-                        if errs:
-                            st.warning(f"Atualizados: {ok}/{len(selecionados)}")
-                            st.text("\n".join(errs[:30]))
+                    ba.registrar_acao(_supabase, st.session_state.usuario.get("email"), "mass_update_status",
+                                      {"qtd": len(selecionados), "status": novo_status})
+                except Exception:
+                    pass
+                st.cache_data.clear()
+                st.rerun()
+    
+        # 2) Previsão em massa
+        with a2:
+            st.markdown("### 📅 Previsão")
+            nova_prev = st.date_input("Nova previsão", value=datetime.now(), key="mass_prev")
+            if st.button("Aplicar previsão", use_container_width=True):
+                payload = {"previsao_entrega": nova_prev.isoformat()}
+                ok, errs = _bulk_update(_supabase, selecionados, payload)
+                if errs:
+                    st.warning(f"Atualizados: {ok}/{len(selecionados)}")
+                    st.text("\n".join(errs[:30]))
+                else:
+                    st.success(f"✅ Previsão atualizada em {ok} pedidos.")
+                try:
+                    ba.registrar_acao(_supabase, st.session_state.usuario.get("email"), "mass_update_previsao",
+                                      {"qtd": len(selecionados), "previsao": nova_prev.isoformat()})
+                except Exception:
+                    pass
+                st.cache_data.clear()
+                st.rerun()
+    
+        # 3) Fornecedor em massa
+        with a3:
+            st.markdown("### 🏭 Fornecedor")
+            df_fornecedores = carregar_fornecedores(_supabase)
+            if df_fornecedores is None or df_fornecedores.empty:
+                st.warning("Sem fornecedores cadastrados.")
+            else:
+                stamp_f = _make_df_stamp(df_fornecedores, "updated_at" if "updated_at" in df_fornecedores.columns else "id")
+                forn_opts, mapa = _build_fornecedor_options(stamp_f, df_fornecedores)
+    
+                forn_sel = st.selectbox("Fornecedor", forn_opts, index=0, key="mass_forn")
+                if st.button("Aplicar fornecedor", use_container_width=True, disabled=(not forn_sel)):
+                    try:
+                        cod = int(str(forn_sel).split(" - ")[0])
+                        forn_id = mapa.get(cod)
+                        if not forn_id:
+                            st.error("Fornecedor não encontrado no mapa.")
                         else:
-                            st.success(f"✅ Fornecedor atualizado em {ok} pedidos.")
-                        try:
-                            ba.registrar_acao(_supabase, st.session_state.usuario.get("email"), "mass_update_fornecedor",
-                                              {"qtd": len(selecionados), "cod_fornecedor": cod})
-                        except Exception:
-                            pass
-                        st.cache_data.clear()
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao aplicar fornecedor: {e}")
+                            ok, errs = _bulk_update(_supabase, selecionados, {"fornecedor_id": forn_id})
+                            if errs:
+                                st.warning(f"Atualizados: {ok}/{len(selecionados)}")
+                                st.text("\n".join(errs[:30]))
+                            else:
+                                st.success(f"✅ Fornecedor atualizado em {ok} pedidos.")
+                            try:
+                                ba.registrar_acao(_supabase, st.session_state.usuario.get("email"), "mass_update_fornecedor",
+                                                  {"qtd": len(selecionados), "cod_fornecedor": cod})
+                            except Exception:
+                                pass
+                            st.cache_data.clear()
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao aplicar fornecedor: {e}")
