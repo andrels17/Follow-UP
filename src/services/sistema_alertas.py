@@ -1,13 +1,12 @@
-import pandas as pd
 import streamlit as st
+import pandas as pd
 import re
 import html
 from datetime import datetime, timedelta
 
 
 def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | None = None):
-    """
-    Calcula todos os tipos de alertas do sistema.
+    """Calcula todos os tipos de alertas do sistema.
 
     Compatível com chamadas antigas (apenas df_pedidos) e novas (df_pedidos, df_fornecedores).
     Regra de vencimento/atraso: previsao_entrega > prazo_entrega > data_oc + 30 dias.
@@ -30,30 +29,23 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     # ============================
     # Normalizações e tipos
     # ============================
-
-    # entregue (bool robusto)
     if "entregue" in df.columns:
-        # pode vir como bool, int, str; normalizar
         df["entregue"] = df["entregue"].astype(str).str.lower().isin(["true", "1", "yes", "sim"])
     else:
         df["entregue"] = False
 
-    # quantidades
     if "qtde_pendente" in df.columns:
         df["_qtd_pendente"] = pd.to_numeric(df["qtde_pendente"], errors="coerce").fillna(0)
     else:
         df["_qtd_pendente"] = 0
 
-    # Pendente: não entregue OU existe quantidade pendente
     df["_pendente"] = (~df["entregue"]) | (df["_qtd_pendente"] > 0)
 
-    # valores
     if "valor_total" in df.columns:
         df["_valor_total"] = pd.to_numeric(df["valor_total"], errors="coerce").fillna(0.0)
     else:
         df["_valor_total"] = 0.0
 
-    # Datas (dayfirst para pt-BR)
     def _dt(col: str) -> pd.Series:
         if col not in df.columns:
             return pd.Series([pd.NaT] * len(df), index=df.index)
@@ -63,12 +55,10 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     prev = _dt("previsao_entrega")
     prazo = _dt("prazo_entrega")
 
-    # Vencimento / data de referência
     due = prev.combine_first(prazo)
     fallback_due = data_oc + pd.to_timedelta(30, unit="D")
     df["_due"] = due.combine_first(fallback_due)
 
-    # Atraso calculado (não depende de coluna 'atrasado')
     df["_atrasado"] = df["_pendente"] & df["_due"].notna() & (df["_due"] < hoje)
 
     # ============================
@@ -79,26 +69,19 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     else:
         df["fornecedor_id"] = ""
 
-    # Normalizar df_fornecedores ANTES de checar colunas
     df_f = None
     if df_fornecedores is not None and not df_fornecedores.empty:
         df_f = df_fornecedores.copy()
         df_f.columns = [c.strip().lower() for c in df_f.columns]
-
-        # garantir que existe id (mesmo que venha como "ID", já vira "id")
         if "id" in df_f.columns:
             df_f["id"] = df_f["id"].astype(str).str.strip().str.lower()
         else:
             df_f = None
 
-    if df_f is not None and "fornecedor_id" in df.columns:
-        # escolher melhor coluna possível para nome
-        candidatas = ["nome_fantasia", "fantasia", "nome", "razao_social", "razao", "fornecedor"]
-        nome_col = next((c for c in candidatas if c in df_f.columns), None)
-
+    if df_f is not None:
+        nome_col = "nome_fantasia" if "nome_fantasia" in df_f.columns else ("nome" if "nome" in df_f.columns else None)
         cols_keep = ["id"] + ([nome_col] if nome_col else [])
 
-        # IMPORTANTÍSSIMO: evitar colisão do id do pedido x id do fornecedor
         df = df.merge(
             df_f[cols_keep],
             left_on="fornecedor_id",
@@ -116,15 +99,12 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
             df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A")
         )
 
-        # remove o id do fornecedor trazido (se existir) para não atrapalhar outras rotinas
         if "id_forn" in df.columns:
             df.drop(columns=["id_forn"], inplace=True, errors="ignore")
-
     else:
-        # fallback quando não há df_fornecedores
         df["fornecedor_nome"] = df["fornecedor_id"].apply(lambda x: f"Fornecedor {x}" if x else "N/A")
 
-# ============================
+    # ============================
     # 1) Pedidos Atrasados
     # ============================
     df_atrasados = df[df["_atrasado"]].copy()
@@ -171,10 +151,7 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
     # 3) Fornecedores com Baixa Performance
     # ============================
     if "fornecedor_nome" in df.columns and df["fornecedor_nome"].notna().any():
-        # detectar corretamente o id do pedido após merge
-        id_col = "id"
-        if "id" not in df.columns:
-            id_col = "id_x" if "id_x" in df.columns else df.columns[0]
+        id_col = "id" if "id" in df.columns else ("id_x" if "id_x" in df.columns else df.columns[0])
 
         grp = df.groupby("fornecedor_nome", dropna=False).agg(
             total_pedidos=(id_col, "count"),
@@ -182,7 +159,6 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
             atrasados=("_atrasado", "sum"),
         ).reset_index()
 
-        # entregues no prazo (aprox) = entregues - atrasados
         grp["taxa_sucesso"] = ((grp["entregues"] - grp["atrasados"]) / grp["total_pedidos"] * 100).fillna(0)
 
         baixa = grp[(grp["taxa_sucesso"] < 70) & (grp["total_pedidos"] >= 5)]
@@ -217,7 +193,6 @@ def calcular_alertas(df_pedidos: pd.DataFrame, df_fornecedores: pd.DataFrame | N
                 "fornecedor": pedido.get("fornecedor_nome", "N/A"),
             })
 
-    # Total
     alertas["total"] = (
         len(alertas["pedidos_atrasados"])
         + len(alertas["pedidos_vencendo"])
