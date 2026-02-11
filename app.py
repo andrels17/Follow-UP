@@ -37,7 +37,7 @@ def main():
 
     
     df_pedidos = carregar_pedidos(supabase)
-    df_fornecedores = carregar_fornecedores(supabase)
+    df_fornecedores = carregar_fornecedores(supabase, incluir_inativos=True)
     
     alertas = (
         sa.calcular_alertas(df_pedidos, df_fornecedores)
