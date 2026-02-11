@@ -10,6 +10,48 @@ import ficha_material as fm
 from src.repositories.pedidos import carregar_pedidos
 from src.utils.formatting import formatar_moeda_br
 
+import inspect
+
+def _call_insights_automaticos(historico: pd.DataFrame, material_atual: dict) -> None:
+    """Chama fm.criar_insights_automaticos de forma compatível com diferentes assinaturas."""
+    fn = getattr(fm, "criar_insights_automaticos", None)
+    if fn is None:
+        return
+
+    try:
+        sig = inspect.signature(fn)
+        params = [
+            p for p in sig.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        n = len(params)
+    except Exception:
+        n = 2
+
+    try:
+        if n >= 2:
+            fn(historico, material_atual)
+        elif n == 1:
+            fn(historico)
+        else:
+            fn()
+        return
+    except TypeError:
+        pass
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao gerar insights automáticos: {e}")
+        return
+
+    for args in ((historico,), (material_atual,), ()):
+        try:
+            fn(*args)
+            return
+        except Exception:
+            continue
+
+    st.warning("⚠️ Não foi possível gerar insights automáticos (assinatura incompatível).")
+
+
 
 @st.cache_data(ttl=300)
 def _carregar_pedidos_cache(_supabase):
@@ -33,6 +75,8 @@ def exibir_ficha_material(_supabase):
     """Exibe ficha técnica completa e moderna do material"""
 
     st.title("📋 Ficha Técnica de Material")
+    modo_ficha = bool(st.session_state.get("modo_ficha_material", False))
+
 
     df_pedidos = _carregar_pedidos_cache(_supabase)
 
@@ -57,108 +101,144 @@ def exibir_ficha_material(_supabase):
     col_entregue = _pick_col(df_pedidos, ["entregue", "entrega", "is_entregue"])
     col_equip = _pick_col(df_pedidos, ["cod_equipamento", "equipamento"])
     col_dep = _pick_col(df_pedidos, ["departamento", "setor"])
+    if not modo_ficha:
 
-    # ============================================================
-    # SISTEMA DE ABAS PARA BUSCA
-    # ============================================================
-    tab1, tab2, tab3 = st.tabs(
-        ["🔍 Buscar Material", "🔧 Buscar por Equipamento", "🏢 Buscar por Departamento"]
-    )
+        # ============================================================
+        # SISTEMA DE ABAS PARA BUSCA
+        # ============================================================
+        tab1, tab2, tab3 = st.tabs(
+            ["🔍 Buscar Material", "🔧 Buscar por Equipamento", "🏢 Buscar por Departamento"]
+        )
 
-    # Estado/Contexto (não deixar variável "sumir" fora das tabs)
-    material_key = st.session_state.get("material_fixo", {"cod": None, "desc": None})
-    material_selecionado_cod = material_key.get("cod")
-    material_selecionado_desc = material_key.get("desc")
-    tipo_busca = st.session_state.get("tipo_busca_ficha", None)
-    equipamento_ctx = st.session_state.get("equipamento_ctx", "")
-    departamento_ctx = st.session_state.get("departamento_ctx", "")
+        # Estado/Contexto (não deixar variável "sumir" fora das tabs)
+        material_key = st.session_state.get("material_fixo", {"cod": None, "desc": None})
+        material_selecionado_cod = material_key.get("cod")
+        material_selecionado_desc = material_key.get("desc")
+        tipo_busca = st.session_state.get("tipo_busca_ficha", None)
+        equipamento_ctx = st.session_state.get("equipamento_ctx", "")
+        departamento_ctx = st.session_state.get("departamento_ctx", "")
 
-    historico_material = pd.DataFrame()
+        historico_material = pd.DataFrame()
 
-    # ============================================================
-    # TAB 1: BUSCA POR MATERIAL (COM BARRA DE PESQUISA)
-    # ============================================================
-    with tab1:
-        st.markdown("### 🔎 Buscar Material Específico")
+        # ============================================================
+        # TAB 1: BUSCA POR MATERIAL (COM BARRA DE PESQUISA)
+        # ============================================================
+        with tab1:
+            st.markdown("### 🔎 Buscar Material Específico")
 
-        # Agrupar materiais (preferir por código + descrição)
-        if "cod_material" in df_pedidos.columns:
-            materiais_unicos = (
-                df_pedidos.groupby(["cod_material"], dropna=True)
-                .agg(
-                    descricao=("descricao", "first"),
-                    compras=("id", "count") if "id" in df_pedidos.columns else ("descricao", "count"),
+            # Agrupar materiais (preferir por código + descrição)
+            if "cod_material" in df_pedidos.columns:
+                materiais_unicos = (
+                    df_pedidos.groupby(["cod_material"], dropna=True)
+                    .agg(
+                        descricao=("descricao", "first"),
+                        compras=("id", "count") if "id" in df_pedidos.columns else ("descricao", "count"),
+                    )
+                    .reset_index()
                 )
-                .reset_index()
-            )
-            materiais_unicos = materiais_unicos.sort_values("compras", ascending=False)
-        else:
-            materiais_unicos = (
-                df_pedidos.groupby(["descricao"], dropna=True)
-                .agg(
-                    compras=("id", "count") if "id" in df_pedidos.columns else ("descricao", "count"),
+                materiais_unicos = materiais_unicos.sort_values("compras", ascending=False)
+            else:
+                materiais_unicos = (
+                    df_pedidos.groupby(["descricao"], dropna=True)
+                    .agg(
+                        compras=("id", "count") if "id" in df_pedidos.columns else ("descricao", "count"),
+                    )
+                    .reset_index()
+                    .rename(columns={"descricao": "descricao"})
+                    .sort_values("compras", ascending=False)
                 )
-                .reset_index()
-                .rename(columns={"descricao": "descricao"})
-                .sort_values("compras", ascending=False)
-            )
-            materiais_unicos["cod_material"] = None
+                materiais_unicos["cod_material"] = None
 
-        col1, col2 = st.columns([4, 1])
+            col1, col2 = st.columns([4, 1])
 
-        with col1:
-            busca_texto = st.text_input(
-                "Digite o código do material:",
-                placeholder="Ex: MAT001, 12345, FILT-200...",
-                help="Digite o código completo ou parcial do material para buscar",
-                key="busca_material",
-            )
+            with col1:
+                busca_texto = st.text_input(
+                    "Digite o código do material:",
+                    placeholder="Ex: MAT001, 12345, FILT-200...",
+                    help="Digite o código completo ou parcial do material para buscar",
+                    key="busca_material",
+                )
 
-        with col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🔄 Limpar", key="limpar_material"):
-                st.session_state.pop("material_fixo", None)
-                st.session_state.pop("tipo_busca_ficha", None)
-                st.session_state.pop("equipamento_ctx", None)
-                st.session_state.pop("departamento_ctx", None)
-                st.rerun()
+            with col2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🔄 Limpar", key="limpar_material"):
+                    st.session_state.pop("material_fixo", None)
+                    st.session_state.pop("tipo_busca_ficha", None)
+                    st.session_state.pop("equipamento_ctx", None)
+                    st.session_state.pop("departamento_ctx", None)
+                    st.rerun()
 
-        if busca_texto:
-            if "cod_material" in materiais_unicos.columns:
-                materiais_filtrados = materiais_unicos[
-                    materiais_unicos["cod_material"]
-                    .astype(str)
-                    .str.contains(str(busca_texto).upper(), case=False, na=False)
-                ]
+            if busca_texto:
+                if "cod_material" in materiais_unicos.columns:
+                    materiais_filtrados = materiais_unicos[
+                        materiais_unicos["cod_material"]
+                        .astype(str)
+                        .str.contains(str(busca_texto).upper(), case=False, na=False)
+                    ]
+                else:
+                    materiais_filtrados = materiais_unicos[
+                        materiais_unicos["descricao"]
+                        .astype(str)
+                        .str.contains(str(busca_texto).upper(), case=False, na=False)
+                    ]
+
+                if materiais_filtrados.empty:
+                    st.warning(f"⚠️ Nenhum material encontrado com código '{busca_texto}'")
+                    st.info("💡 Tente códigos mais genéricos ou verifique se o código está correto")
+                else:
+                    st.success(f"✅ {len(materiais_filtrados)} material(is) encontrado(s)")
+                    st.markdown("#### Selecione um material:")
+
+                    for idx, row in materiais_filtrados.head(10).iterrows():
+                        c1, c2, c3 = st.columns([3, 1, 1])
+
+                        with c1:
+                            cod = row.get("cod_material")
+                            desc = row.get("descricao", "")
+                            st.markdown(f"**Código:** {cod if pd.notna(cod) and str(cod).strip() else 'N/A'}")
+                            if pd.notna(desc) and str(desc).strip():
+                                st.caption(str(desc))
+
+                        with c2:
+                            st.metric("Compras", int(row.get("compras", 0)))
+
+                        with c3:
+                            if st.button("Ver Ficha", key=f"ver_{idx}"):
+                                st.session_state["material_fixo"] = {
+                                    "cod": row.get("cod_material"),
+                                    "desc": row.get("descricao"),
+                                }
+                                st.session_state["tipo_busca_ficha"] = "material"
+                                st.session_state["equipamento_ctx"] = ""
+                                st.session_state["departamento_ctx"] = ""
+                                st.session_state["modo_ficha_material"] = True
+                                st.rerun()
+
+                        st.markdown("---")
+
+                    if len(materiais_filtrados) > 10:
+                        st.info(
+                            f"ℹ️ Mostrando 10 de {len(materiais_filtrados)} resultados. Refine sua busca para ver mais."
+                        )
             else:
-                materiais_filtrados = materiais_unicos[
-                    materiais_unicos["descricao"]
-                    .astype(str)
-                    .str.contains(str(busca_texto).upper(), case=False, na=False)
-                ]
+                st.info("💡 Digite o código do material no campo acima para começar a busca")
 
-            if materiais_filtrados.empty:
-                st.warning(f"⚠️ Nenhum material encontrado com código '{busca_texto}'")
-                st.info("💡 Tente códigos mais genéricos ou verifique se o código está correto")
-            else:
-                st.success(f"✅ {len(materiais_filtrados)} material(is) encontrado(s)")
-                st.markdown("#### Selecione um material:")
-
-                for idx, row in materiais_filtrados.head(10).iterrows():
+                st.markdown("#### 📊 Top 10 Materiais Mais Comprados")
+                for idx, row in materiais_unicos.head(10).iterrows():
                     c1, c2, c3 = st.columns([3, 1, 1])
 
                     with c1:
-                        cod = row.get("cod_material")
                         desc = row.get("descricao", "")
-                        st.markdown(f"**Código:** {cod if pd.notna(cod) and str(cod).strip() else 'N/A'}")
-                        if pd.notna(desc) and str(desc).strip():
-                            st.caption(str(desc))
+                        cod = row.get("cod_material")
+                        st.markdown(f"**{desc if pd.notna(desc) else 'Material'}**")
+                        if pd.notna(cod) and str(cod).strip():
+                            st.caption(f"Código: {cod}")
 
                     with c2:
                         st.metric("Compras", int(row.get("compras", 0)))
 
                     with c3:
-                        if st.button("Ver Ficha", key=f"ver_{idx}"):
+                        if st.button("Ver Ficha", key=f"top_{idx}"):
                             st.session_state["material_fixo"] = {
                                 "cod": row.get("cod_material"),
                                 "desc": row.get("descricao"),
@@ -166,484 +246,466 @@ def exibir_ficha_material(_supabase):
                             st.session_state["tipo_busca_ficha"] = "material"
                             st.session_state["equipamento_ctx"] = ""
                             st.session_state["departamento_ctx"] = ""
+                            st.session_state["modo_ficha_material"] = True
                             st.rerun()
 
                     st.markdown("---")
 
-                if len(materiais_filtrados) > 10:
-                    st.info(
-                        f"ℹ️ Mostrando 10 de {len(materiais_filtrados)} resultados. Refine sua busca para ver mais."
-                    )
-        else:
-            st.info("💡 Digite o código do material no campo acima para começar a busca")
+        # ============================================================
+        # TAB 2: BUSCA POR EQUIPAMENTO
+        # ============================================================
+        with tab2:
+            st.markdown("### 🔧 Materiais por Equipamento")
 
-            st.markdown("#### 📊 Top 10 Materiais Mais Comprados")
-            for idx, row in materiais_unicos.head(10).iterrows():
-                c1, c2, c3 = st.columns([3, 1, 1])
-
-                with c1:
-                    desc = row.get("descricao", "")
-                    cod = row.get("cod_material")
-                    st.markdown(f"**{desc if pd.notna(desc) else 'Material'}**")
-                    if pd.notna(cod) and str(cod).strip():
-                        st.caption(f"Código: {cod}")
-
-                with c2:
-                    st.metric("Compras", int(row.get("compras", 0)))
-
-                with c3:
-                    if st.button("Ver Ficha", key=f"top_{idx}"):
-                        st.session_state["material_fixo"] = {
-                            "cod": row.get("cod_material"),
-                            "desc": row.get("descricao"),
-                        }
-                        st.session_state["tipo_busca_ficha"] = "material"
-                        st.session_state["equipamento_ctx"] = ""
-                        st.session_state["departamento_ctx"] = ""
-                        st.rerun()
-
-                st.markdown("---")
-
-    # ============================================================
-    # TAB 2: BUSCA POR EQUIPAMENTO
-    # ============================================================
-    with tab2:
-        st.markdown("### 🔧 Materiais por Equipamento")
-
-        if not col_equip or col_equip not in df_pedidos.columns:
-            st.warning("⚠️ Coluna de equipamento não encontrada nos pedidos")
-        else:
-            equipamentos_todos = df_pedidos[col_equip].dropna().astype(str).str.strip().unique().tolist()
-            equipamentos_todos = sorted([eq for eq in equipamentos_todos if eq])
-
-            if not equipamentos_todos:
-                st.warning("⚠️ Nenhum equipamento cadastrado nos pedidos")
+            if not col_equip or col_equip not in df_pedidos.columns:
+                st.warning("⚠️ Coluna de equipamento não encontrada nos pedidos")
             else:
-                st.markdown("#### 🔍 Buscar Equipamento")
-                c1, c2 = st.columns([4, 1])
+                equipamentos_todos = df_pedidos[col_equip].dropna().astype(str).str.strip().unique().tolist()
+                equipamentos_todos = sorted([eq for eq in equipamentos_todos if eq])
 
-                with c1:
-                    busca_equipamento = st.text_input(
-                        "Digite o código ou nome do equipamento:",
-                        placeholder="Ex: TR-001, TRATOR, ESCAVADEIRA...",
-                        help="Busca por código ou descrição do equipamento",
-                        key="busca_equipamento",
-                    )
-
-                with c2:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("🔄 Limpar", key="limpar_busca_equipamento"):
-                        st.session_state.pop("material_fixo", None)
-                        st.session_state.pop("tipo_busca_ficha", None)
-                        st.session_state.pop("equipamento_ctx", None)
-                        st.session_state.pop("departamento_ctx", None)
-                        st.rerun()
-
-                if busca_equipamento:
-                    equipamentos_filtrados = [
-                        eq for eq in equipamentos_todos if busca_equipamento.upper() in eq.upper()
-                    ]
-                    if not equipamentos_filtrados:
-                        st.warning(f"⚠️ Nenhum equipamento encontrado com '{busca_equipamento}'")
-                        equipamentos_filtrados = []
-                    else:
-                        st.success(f"✅ {len(equipamentos_filtrados)} equipamento(s) encontrado(s)")
+                if not equipamentos_todos:
+                    st.warning("⚠️ Nenhum equipamento cadastrado nos pedidos")
                 else:
-                    equipamentos_filtrados = equipamentos_todos
-
-                equipamento_selecionado = ""
-                if equipamentos_filtrados:
-                    equipamento_selecionado = st.selectbox(
-                        "Selecione o Equipamento:",
-                        options=[""] + equipamentos_filtrados,
-                        format_func=lambda x: "Selecione..." if x == "" else x,
-                        key="select_equipamento",
-                    )
-
-                if equipamento_selecionado:
-                    df_equipamento = df_pedidos[df_pedidos[col_equip] == equipamento_selecionado].copy()
-                    st.markdown("---")
-
-                    st.markdown("#### 🎛️ Filtros Avançados")
-                    c1, c2, c3 = st.columns(3)
+                    st.markdown("#### 🔍 Buscar Equipamento")
+                    c1, c2 = st.columns([4, 1])
 
                     with c1:
-                        if col_status and col_status in df_equipamento.columns:
-                            status_options = df_equipamento[col_status].dropna().unique().tolist()
-                        else:
-                            status_options = []
-                        status_filtro_eq = st.multiselect(
-                            "📊 Status",
-                            options=status_options,
-                            default=status_options,
-                            key="status_eq",
+                        busca_equipamento = st.text_input(
+                            "Digite o código ou nome do equipamento:",
+                            placeholder="Ex: TR-001, TRATOR, ESCAVADEIRA...",
+                            help="Busca por código ou descrição do equipamento",
+                            key="busca_equipamento",
                         )
 
                     with c2:
-                        periodo_eq = st.selectbox(
-                            "📅 Período",
-                            ["Todos", "Último mês", "Últimos 3 meses", "Últimos 6 meses", "Último ano"],
-                            key="periodo_eq",
-                        )
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("🔄 Limpar", key="limpar_busca_equipamento"):
+                            st.session_state.pop("material_fixo", None)
+                            st.session_state.pop("tipo_busca_ficha", None)
+                            st.session_state.pop("equipamento_ctx", None)
+                            st.session_state.pop("departamento_ctx", None)
+                            st.rerun()
 
-                    with c3:
-                        filtro_entrega_eq = st.selectbox(
-                            "🚚 Entrega",
-                            ["Todos", "Apenas Entregues", "Apenas Pendentes"],
-                            key="entrega_eq",
-                        )
-
-                    df_eq_filtrado = df_equipamento.copy()
-
-                    if status_filtro_eq and col_status:
-                        df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_status].isin(status_filtro_eq)]
-
-                    if periodo_eq != "Todos" and col_data:
-                        hoje = datetime.now()
-                        if periodo_eq == "Último mês":
-                            data_limite = hoje - pd.DateOffset(months=1)
-                        elif periodo_eq == "Últimos 3 meses":
-                            data_limite = hoje - pd.DateOffset(months=3)
-                        elif periodo_eq == "Últimos 6 meses":
-                            data_limite = hoje - pd.DateOffset(months=6)
+                    if busca_equipamento:
+                        equipamentos_filtrados = [
+                            eq for eq in equipamentos_todos if busca_equipamento.upper() in eq.upper()
+                        ]
+                        if not equipamentos_filtrados:
+                            st.warning(f"⚠️ Nenhum equipamento encontrado com '{busca_equipamento}'")
+                            equipamentos_filtrados = []
                         else:
-                            data_limite = hoje - pd.DateOffset(years=1)
-
-                        dt = _safe_datetime_series(df_eq_filtrado[col_data])
-                        df_eq_filtrado = df_eq_filtrado[dt >= data_limite]
-
-                    if col_entregue and col_entregue in df_eq_filtrado.columns:
-                        if filtro_entrega_eq == "Apenas Entregues":
-                            df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_entregue] == True]
-                        elif filtro_entrega_eq == "Apenas Pendentes":
-                            df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_entregue] == False]
-
-                    st.markdown("---")
-
-                    c1, c2, c3, c4 = st.columns(4)
-
-                    with c1:
-                        st.metric("📦 Total de Pedidos", len(df_eq_filtrado))
-
-                    with c2:
-                        st.metric(
-                            "🔧 Materiais Diferentes",
-                            int(df_eq_filtrado["descricao"].nunique()) if "descricao" in df_eq_filtrado.columns else 0,
-                        )
-
-                    with c3:
-                        valor_total = float(df_eq_filtrado[col_total].sum()) if col_total else 0.0
-                        st.metric("💰 Valor Total", formatar_moeda_br(valor_total))
-
-                    with c4:
-                        if col_entregue:
-                            entregues = int((df_eq_filtrado[col_entregue] == True).sum())
-                            st.metric("✅ Entregues", f"{entregues}/{len(df_eq_filtrado)}")
-                        else:
-                            st.metric("✅ Entregues", "—")
-
-                    st.markdown("---")
-
-                    if df_eq_filtrado.empty:
-                        st.warning("⚠️ Nenhum material encontrado com os filtros aplicados")
+                            st.success(f"✅ {len(equipamentos_filtrados)} equipamento(s) encontrado(s)")
                     else:
-                        # Agrupar por código+descrição para evitar ambiguidade
-                        group_cols = ["descricao"]
-                        if "cod_material" in df_eq_filtrado.columns:
-                            group_cols = ["cod_material", "descricao"]
+                        equipamentos_filtrados = equipamentos_todos
 
-                        agg_map = {
-                            "id": "count" if "id" in df_eq_filtrado.columns else "size",
-                        }
-                        if col_total:
-                            agg_map[col_total] = "sum"
-                        if col_qtd:
-                            agg_map[col_qtd] = "sum"
-                        if col_entregue:
-                            agg_map[col_entregue] = lambda x: int((x == True).sum())
-
-                        materiais_equipamento = (
-                            df_eq_filtrado.groupby(group_cols, dropna=False)
-                            .agg(agg_map)
-                            .reset_index()
+                    equipamento_selecionado = ""
+                    if equipamentos_filtrados:
+                        equipamento_selecionado = st.selectbox(
+                            "Selecione o Equipamento:",
+                            options=[""] + equipamentos_filtrados,
+                            format_func=lambda x: "Selecione..." if x == "" else x,
+                            key="select_equipamento",
                         )
 
-                        # Renomear colunas
-                        rename_map = {}
-                        if "id" in materiais_equipamento.columns:
-                            rename_map["id"] = "Pedidos"
-                        else:
-                            rename_map["size"] = "Pedidos"
-                        if col_total:
-                            rename_map[col_total] = "Valor Total"
-                        if col_qtd:
-                            rename_map[col_qtd] = "Qtd Total"
-                        if col_entregue:
-                            rename_map[col_entregue] = "Entregues"
+                    if equipamento_selecionado:
+                        df_equipamento = df_pedidos[df_pedidos[col_equip] == equipamento_selecionado].copy()
+                        st.markdown("---")
 
-                        materiais_equipamento = materiais_equipamento.rename(columns=rename_map)
-                        if "Pedidos" in materiais_equipamento.columns:
-                            materiais_equipamento = materiais_equipamento.sort_values("Pedidos", ascending=False)
+                        st.markdown("#### 🎛️ Filtros Avançados")
+                        c1, c2, c3 = st.columns(3)
 
-                        st.markdown(f"#### 📋 Materiais do Equipamento **{equipamento_selecionado}**")
-                        st.caption(f"Mostrando {len(materiais_equipamento)} material(is) • {len(df_eq_filtrado)} pedido(s)")
-
-                        for idx, row in materiais_equipamento.iterrows():
-                            cols = st.columns([3, 1, 1, 1, 1])
-                            cod = row.get("cod_material") if "cod_material" in materiais_equipamento.columns else None
-                            desc = row.get("descricao", "")
-
-                            with cols[0]:
-                                titulo = f"{desc}"
-                                if pd.notna(cod) and str(cod).strip():
-                                    titulo = f"{desc}  ·  ({cod})"
-                                st.markdown(f"**{titulo}**")
-
-                            with cols[1]:
-                                st.metric("Pedidos", int(row.get("Pedidos", 0)))
-
-                            with cols[2]:
-                                vt = float(row.get("Valor Total", 0.0)) if "Valor Total" in row else 0.0
-                                st.metric("Valor", formatar_moeda_br(vt))
-
-                            with cols[3]:
-                                if "Entregues" in row and "Pedidos" in row:
-                                    st.metric("Entregues", f"{int(row.get('Entregues', 0))}/{int(row.get('Pedidos', 0))}")
-                                else:
-                                    st.metric("Entregues", "—")
-
-                            with cols[4]:
-                                if st.button("Ver Ficha", key=f"eq_{idx}"):
-                                    st.session_state["material_fixo"] = {"cod": cod, "desc": desc}
-                                    st.session_state["tipo_busca_ficha"] = "equipamento"
-                                    st.session_state["equipamento_ctx"] = equipamento_selecionado
-                                    st.session_state["departamento_ctx"] = ""
-                                    st.rerun()
-
-                            st.markdown("---")
-
-    # ============================================================
-    # TAB 3: BUSCA POR DEPARTAMENTO
-    # ============================================================
-    with tab3:
-        st.markdown("### 🏢 Materiais por Departamento")
-
-        if not col_dep or col_dep not in df_pedidos.columns:
-            st.warning("⚠️ Coluna de departamento não encontrada nos pedidos")
-        else:
-            departamentos = df_pedidos[col_dep].dropna().astype(str).str.strip().unique().tolist()
-            departamentos = sorted([d for d in departamentos if d])
-
-            if not departamentos:
-                st.warning("⚠️ Nenhum departamento cadastrado nos pedidos")
-            else:
-                c1, c2 = st.columns([4, 1])
-
-                with c1:
-                    departamento_selecionado = st.selectbox(
-                        "Selecione o Departamento:",
-                        options=[""] + departamentos,
-                        format_func=lambda x: "Selecione..." if x == "" else x,
-                        key="select_departamento",
-                    )
-
-                with c2:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("🔄 Limpar", key="limpar_departamento"):
-                        st.session_state.pop("material_fixo", None)
-                        st.session_state.pop("tipo_busca_ficha", None)
-                        st.session_state.pop("equipamento_ctx", None)
-                        st.session_state.pop("departamento_ctx", None)
-                        st.rerun()
-
-                if departamento_selecionado:
-                    df_departamento = df_pedidos[df_pedidos[col_dep] == departamento_selecionado].copy()
-                    st.markdown("---")
-
-                    st.markdown("#### 🎛️ Filtros Avançados")
-                    c1, c2, c3, c4 = st.columns(4)
-
-                    with c1:
-                        if col_status and col_status in df_departamento.columns:
-                            status_options_dep = df_departamento[col_status].dropna().unique().tolist()
-                        else:
-                            status_options_dep = []
-                        status_filtro_dep = st.multiselect(
-                            "📊 Status",
-                            options=status_options_dep,
-                            default=status_options_dep,
-                            key="status_dep",
-                        )
-
-                    with c2:
-                        periodo_dep = st.selectbox(
-                            "📅 Período",
-                            ["Todos", "Último mês", "Últimos 3 meses", "Últimos 6 meses", "Último ano"],
-                            key="periodo_dep",
-                        )
-
-                    with c3:
-                        filtro_entrega_dep = st.selectbox(
-                            "🚚 Entrega",
-                            ["Todos", "Apenas Entregues", "Apenas Pendentes"],
-                            key="entrega_dep",
-                        )
-
-                    with c4:
-                        if col_equip and col_equip in df_departamento.columns:
-                            equipamentos_dep = ["Todos"] + sorted(
-                                df_departamento[col_equip].dropna().astype(str).unique().tolist()
+                        with c1:
+                            if col_status and col_status in df_equipamento.columns:
+                                status_options = df_equipamento[col_status].dropna().unique().tolist()
+                            else:
+                                status_options = []
+                            status_filtro_eq = st.multiselect(
+                                "📊 Status",
+                                options=status_options,
+                                default=status_options,
+                                key="status_eq",
                             )
+
+                        with c2:
+                            periodo_eq = st.selectbox(
+                                "📅 Período",
+                                ["Todos", "Último mês", "Últimos 3 meses", "Últimos 6 meses", "Último ano"],
+                                key="periodo_eq",
+                            )
+
+                        with c3:
+                            filtro_entrega_eq = st.selectbox(
+                                "🚚 Entrega",
+                                ["Todos", "Apenas Entregues", "Apenas Pendentes"],
+                                key="entrega_eq",
+                            )
+
+                        df_eq_filtrado = df_equipamento.copy()
+
+                        if status_filtro_eq and col_status:
+                            df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_status].isin(status_filtro_eq)]
+
+                        if periodo_eq != "Todos" and col_data:
+                            hoje = datetime.now()
+                            if periodo_eq == "Último mês":
+                                data_limite = hoje - pd.DateOffset(months=1)
+                            elif periodo_eq == "Últimos 3 meses":
+                                data_limite = hoje - pd.DateOffset(months=3)
+                            elif periodo_eq == "Últimos 6 meses":
+                                data_limite = hoje - pd.DateOffset(months=6)
+                            else:
+                                data_limite = hoje - pd.DateOffset(years=1)
+
+                            dt = _safe_datetime_series(df_eq_filtrado[col_data])
+                            df_eq_filtrado = df_eq_filtrado[dt >= data_limite]
+
+                        if col_entregue and col_entregue in df_eq_filtrado.columns:
+                            if filtro_entrega_eq == "Apenas Entregues":
+                                df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_entregue] == True]
+                            elif filtro_entrega_eq == "Apenas Pendentes":
+                                df_eq_filtrado = df_eq_filtrado[df_eq_filtrado[col_entregue] == False]
+
+                        st.markdown("---")
+
+                        c1, c2, c3, c4 = st.columns(4)
+
+                        with c1:
+                            st.metric("📦 Total de Pedidos", len(df_eq_filtrado))
+
+                        with c2:
+                            st.metric(
+                                "🔧 Materiais Diferentes",
+                                int(df_eq_filtrado["descricao"].nunique()) if "descricao" in df_eq_filtrado.columns else 0,
+                            )
+
+                        with c3:
+                            valor_total = float(df_eq_filtrado[col_total].sum()) if col_total else 0.0
+                            st.metric("💰 Valor Total", formatar_moeda_br(valor_total))
+
+                        with c4:
+                            if col_entregue:
+                                entregues = int((df_eq_filtrado[col_entregue] == True).sum())
+                                st.metric("✅ Entregues", f"{entregues}/{len(df_eq_filtrado)}")
+                            else:
+                                st.metric("✅ Entregues", "—")
+
+                        st.markdown("---")
+
+                        if df_eq_filtrado.empty:
+                            st.warning("⚠️ Nenhum material encontrado com os filtros aplicados")
                         else:
-                            equipamentos_dep = ["Todos"]
-                        filtro_equipamento_dep = st.selectbox(
-                            "🔧 Equipamento",
-                            options=equipamentos_dep,
-                            key="equipamento_dep",
-                        )
+                            # Agrupar por código+descrição para evitar ambiguidade
+                            group_cols = ["descricao"]
+                            if "cod_material" in df_eq_filtrado.columns:
+                                group_cols = ["cod_material", "descricao"]
 
-                    df_dep_filtrado = df_departamento.copy()
+                            agg_map = {
+                                "id": "count" if "id" in df_eq_filtrado.columns else "size",
+                            }
+                            if col_total:
+                                agg_map[col_total] = "sum"
+                            if col_qtd:
+                                agg_map[col_qtd] = "sum"
+                            if col_entregue:
+                                agg_map[col_entregue] = lambda x: int((x == True).sum())
 
-                    if status_filtro_dep and col_status:
-                        df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_status].isin(status_filtro_dep)]
+                            materiais_equipamento = (
+                                df_eq_filtrado.groupby(group_cols, dropna=False)
+                                .agg(agg_map)
+                                .reset_index()
+                            )
 
-                    if periodo_dep != "Todos" and col_data:
-                        hoje = datetime.now()
-                        if periodo_dep == "Último mês":
-                            data_limite = hoje - pd.DateOffset(months=1)
-                        elif periodo_dep == "Últimos 3 meses":
-                            data_limite = hoje - pd.DateOffset(months=3)
-                        elif periodo_dep == "Últimos 6 meses":
-                            data_limite = hoje - pd.DateOffset(months=6)
-                        else:
-                            data_limite = hoje - pd.DateOffset(years=1)
+                            # Renomear colunas
+                            rename_map = {}
+                            if "id" in materiais_equipamento.columns:
+                                rename_map["id"] = "Pedidos"
+                            else:
+                                rename_map["size"] = "Pedidos"
+                            if col_total:
+                                rename_map[col_total] = "Valor Total"
+                            if col_qtd:
+                                rename_map[col_qtd] = "Qtd Total"
+                            if col_entregue:
+                                rename_map[col_entregue] = "Entregues"
 
-                        dt = _safe_datetime_series(df_dep_filtrado[col_data])
-                        df_dep_filtrado = df_dep_filtrado[dt >= data_limite]
+                            materiais_equipamento = materiais_equipamento.rename(columns=rename_map)
+                            if "Pedidos" in materiais_equipamento.columns:
+                                materiais_equipamento = materiais_equipamento.sort_values("Pedidos", ascending=False)
 
-                    if col_entregue and col_entregue in df_dep_filtrado.columns:
-                        if filtro_entrega_dep == "Apenas Entregues":
-                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_entregue] == True]
-                        elif filtro_entrega_dep == "Apenas Pendentes":
-                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_entregue] == False]
+                            st.markdown(f"#### 📋 Materiais do Equipamento **{equipamento_selecionado}**")
+                            st.caption(f"Mostrando {len(materiais_equipamento)} material(is) • {len(df_eq_filtrado)} pedido(s)")
 
-                    if filtro_equipamento_dep != "Todos" and col_equip:
-                        df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_equip] == filtro_equipamento_dep]
+                            for idx, row in materiais_equipamento.iterrows():
+                                cols = st.columns([3, 1, 1, 1, 1])
+                                cod = row.get("cod_material") if "cod_material" in materiais_equipamento.columns else None
+                                desc = row.get("descricao", "")
 
-                    st.markdown("---")
+                                with cols[0]:
+                                    titulo = f"{desc}"
+                                    if pd.notna(cod) and str(cod).strip():
+                                        titulo = f"{desc}  ·  ({cod})"
+                                    st.markdown(f"**{titulo}**")
 
-                    c1, c2, c3, c4 = st.columns(4)
+                                with cols[1]:
+                                    st.metric("Pedidos", int(row.get("Pedidos", 0)))
+
+                                with cols[2]:
+                                    vt = float(row.get("Valor Total", 0.0)) if "Valor Total" in row else 0.0
+                                    st.metric("Valor", formatar_moeda_br(vt))
+
+                                with cols[3]:
+                                    if "Entregues" in row and "Pedidos" in row:
+                                        st.metric("Entregues", f"{int(row.get('Entregues', 0))}/{int(row.get('Pedidos', 0))}")
+                                    else:
+                                        st.metric("Entregues", "—")
+
+                                with cols[4]:
+                                    if st.button("Ver Ficha", key=f"eq_{idx}"):
+                                        st.session_state["material_fixo"] = {"cod": cod, "desc": desc}
+                                        st.session_state["tipo_busca_ficha"] = "equipamento"
+                                        st.session_state["equipamento_ctx"] = equipamento_selecionado
+                                        st.session_state["departamento_ctx"] = ""
+                                        st.session_state["modo_ficha_material"] = True
+                                        st.rerun()
+
+                                st.markdown("---")
+
+        # ============================================================
+        # TAB 3: BUSCA POR DEPARTAMENTO
+        # ============================================================
+        with tab3:
+            st.markdown("### 🏢 Materiais por Departamento")
+
+            if not col_dep or col_dep not in df_pedidos.columns:
+                st.warning("⚠️ Coluna de departamento não encontrada nos pedidos")
+            else:
+                departamentos = df_pedidos[col_dep].dropna().astype(str).str.strip().unique().tolist()
+                departamentos = sorted([d for d in departamentos if d])
+
+                if not departamentos:
+                    st.warning("⚠️ Nenhum departamento cadastrado nos pedidos")
+                else:
+                    c1, c2 = st.columns([4, 1])
 
                     with c1:
-                        st.metric("📦 Total de Pedidos", len(df_dep_filtrado))
+                        departamento_selecionado = st.selectbox(
+                            "Selecione o Departamento:",
+                            options=[""] + departamentos,
+                            format_func=lambda x: "Selecione..." if x == "" else x,
+                            key="select_departamento",
+                        )
 
                     with c2:
-                        st.metric(
-                            "🔧 Materiais Diferentes",
-                            int(df_dep_filtrado["descricao"].nunique()) if "descricao" in df_dep_filtrado.columns else 0,
-                        )
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("🔄 Limpar", key="limpar_departamento"):
+                            st.session_state.pop("material_fixo", None)
+                            st.session_state.pop("tipo_busca_ficha", None)
+                            st.session_state.pop("equipamento_ctx", None)
+                            st.session_state.pop("departamento_ctx", None)
+                            st.rerun()
 
-                    with c3:
-                        valor_total = float(df_dep_filtrado[col_total].sum()) if col_total else 0.0
-                        st.metric("💰 Valor Total", formatar_moeda_br(valor_total))
+                    if departamento_selecionado:
+                        df_departamento = df_pedidos[df_pedidos[col_dep] == departamento_selecionado].copy()
+                        st.markdown("---")
 
-                    with c4:
-                        equipamentos_unicos = int(df_dep_filtrado[col_equip].nunique()) if col_equip else 0
-                        st.metric("⚙️ Equipamentos", equipamentos_unicos)
+                        st.markdown("#### 🎛️ Filtros Avançados")
+                        c1, c2, c3, c4 = st.columns(4)
 
-                    st.markdown("---")
+                        with c1:
+                            if col_status and col_status in df_departamento.columns:
+                                status_options_dep = df_departamento[col_status].dropna().unique().tolist()
+                            else:
+                                status_options_dep = []
+                            status_filtro_dep = st.multiselect(
+                                "📊 Status",
+                                options=status_options_dep,
+                                default=status_options_dep,
+                                key="status_dep",
+                            )
 
-                    if df_dep_filtrado.empty:
-                        st.warning("⚠️ Nenhum material encontrado com os filtros aplicados")
-                    else:
-                        group_cols = ["descricao"]
-                        if "cod_material" in df_dep_filtrado.columns:
-                            group_cols = ["cod_material", "descricao"]
+                        with c2:
+                            periodo_dep = st.selectbox(
+                                "📅 Período",
+                                ["Todos", "Último mês", "Últimos 3 meses", "Últimos 6 meses", "Último ano"],
+                                key="periodo_dep",
+                            )
 
-                        agg_map = {
-                            "id": "count" if "id" in df_dep_filtrado.columns else "size",
-                        }
-                        if col_total:
-                            agg_map[col_total] = "sum"
-                        if col_qtd:
-                            agg_map[col_qtd] = "sum"
-                        if col_equip:
-                            agg_map[col_equip] = "nunique"
-                        if col_entregue:
-                            agg_map[col_entregue] = lambda x: int((x == True).sum())
+                        with c3:
+                            filtro_entrega_dep = st.selectbox(
+                                "🚚 Entrega",
+                                ["Todos", "Apenas Entregues", "Apenas Pendentes"],
+                                key="entrega_dep",
+                            )
 
-                        materiais_departamento = (
-                            df_dep_filtrado.groupby(group_cols, dropna=False)
-                            .agg(agg_map)
-                            .reset_index()
-                        )
+                        with c4:
+                            if col_equip and col_equip in df_departamento.columns:
+                                equipamentos_dep = ["Todos"] + sorted(
+                                    df_departamento[col_equip].dropna().astype(str).unique().tolist()
+                                )
+                            else:
+                                equipamentos_dep = ["Todos"]
+                            filtro_equipamento_dep = st.selectbox(
+                                "🔧 Equipamento",
+                                options=equipamentos_dep,
+                                key="equipamento_dep",
+                            )
 
-                        rename_map = {}
-                        if "id" in materiais_departamento.columns:
-                            rename_map["id"] = "Pedidos"
+                        df_dep_filtrado = df_departamento.copy()
+
+                        if status_filtro_dep and col_status:
+                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_status].isin(status_filtro_dep)]
+
+                        if periodo_dep != "Todos" and col_data:
+                            hoje = datetime.now()
+                            if periodo_dep == "Último mês":
+                                data_limite = hoje - pd.DateOffset(months=1)
+                            elif periodo_dep == "Últimos 3 meses":
+                                data_limite = hoje - pd.DateOffset(months=3)
+                            elif periodo_dep == "Últimos 6 meses":
+                                data_limite = hoje - pd.DateOffset(months=6)
+                            else:
+                                data_limite = hoje - pd.DateOffset(years=1)
+
+                            dt = _safe_datetime_series(df_dep_filtrado[col_data])
+                            df_dep_filtrado = df_dep_filtrado[dt >= data_limite]
+
+                        if col_entregue and col_entregue in df_dep_filtrado.columns:
+                            if filtro_entrega_dep == "Apenas Entregues":
+                                df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_entregue] == True]
+                            elif filtro_entrega_dep == "Apenas Pendentes":
+                                df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_entregue] == False]
+
+                        if filtro_equipamento_dep != "Todos" and col_equip:
+                            df_dep_filtrado = df_dep_filtrado[df_dep_filtrado[col_equip] == filtro_equipamento_dep]
+
+                        st.markdown("---")
+
+                        c1, c2, c3, c4 = st.columns(4)
+
+                        with c1:
+                            st.metric("📦 Total de Pedidos", len(df_dep_filtrado))
+
+                        with c2:
+                            st.metric(
+                                "🔧 Materiais Diferentes",
+                                int(df_dep_filtrado["descricao"].nunique()) if "descricao" in df_dep_filtrado.columns else 0,
+                            )
+
+                        with c3:
+                            valor_total = float(df_dep_filtrado[col_total].sum()) if col_total else 0.0
+                            st.metric("💰 Valor Total", formatar_moeda_br(valor_total))
+
+                        with c4:
+                            equipamentos_unicos = int(df_dep_filtrado[col_equip].nunique()) if col_equip else 0
+                            st.metric("⚙️ Equipamentos", equipamentos_unicos)
+
+                        st.markdown("---")
+
+                        if df_dep_filtrado.empty:
+                            st.warning("⚠️ Nenhum material encontrado com os filtros aplicados")
                         else:
-                            rename_map["size"] = "Pedidos"
-                        if col_total:
-                            rename_map[col_total] = "Valor Total"
-                        if col_qtd:
-                            rename_map[col_qtd] = "Qtd Total"
-                        if col_equip:
-                            rename_map[col_equip] = "Equipamentos"
-                        if col_entregue:
-                            rename_map[col_entregue] = "Entregues"
+                            group_cols = ["descricao"]
+                            if "cod_material" in df_dep_filtrado.columns:
+                                group_cols = ["cod_material", "descricao"]
 
-                        materiais_departamento = materiais_departamento.rename(columns=rename_map)
-                        if "Pedidos" in materiais_departamento.columns:
-                            materiais_departamento = materiais_departamento.sort_values("Pedidos", ascending=False)
+                            agg_map = {
+                                "id": "count" if "id" in df_dep_filtrado.columns else "size",
+                            }
+                            if col_total:
+                                agg_map[col_total] = "sum"
+                            if col_qtd:
+                                agg_map[col_qtd] = "sum"
+                            if col_equip:
+                                agg_map[col_equip] = "nunique"
+                            if col_entregue:
+                                agg_map[col_entregue] = lambda x: int((x == True).sum())
 
-                        st.markdown(f"#### 📋 Materiais do Departamento **{departamento_selecionado}**")
-                        st.caption(
-                            f"Mostrando {len(materiais_departamento)} material(is) • {len(df_dep_filtrado)} pedido(s)"
-                        )
+                            materiais_departamento = (
+                                df_dep_filtrado.groupby(group_cols, dropna=False)
+                                .agg(agg_map)
+                                .reset_index()
+                            )
 
-                        for idx, row in materiais_departamento.iterrows():
-                            cols = st.columns([3, 1, 1, 1, 1, 1])
+                            rename_map = {}
+                            if "id" in materiais_departamento.columns:
+                                rename_map["id"] = "Pedidos"
+                            else:
+                                rename_map["size"] = "Pedidos"
+                            if col_total:
+                                rename_map[col_total] = "Valor Total"
+                            if col_qtd:
+                                rename_map[col_qtd] = "Qtd Total"
+                            if col_equip:
+                                rename_map[col_equip] = "Equipamentos"
+                            if col_entregue:
+                                rename_map[col_entregue] = "Entregues"
 
-                            cod = row.get("cod_material") if "cod_material" in materiais_departamento.columns else None
-                            desc = row.get("descricao", "")
+                            materiais_departamento = materiais_departamento.rename(columns=rename_map)
+                            if "Pedidos" in materiais_departamento.columns:
+                                materiais_departamento = materiais_departamento.sort_values("Pedidos", ascending=False)
 
-                            with cols[0]:
-                                titulo = f"{desc}"
-                                if pd.notna(cod) and str(cod).strip():
-                                    titulo = f"{desc}  ·  ({cod})"
-                                st.markdown(f"**{titulo}**")
+                            st.markdown(f"#### 📋 Materiais do Departamento **{departamento_selecionado}**")
+                            st.caption(
+                                f"Mostrando {len(materiais_departamento)} material(is) • {len(df_dep_filtrado)} pedido(s)"
+                            )
 
-                            with cols[1]:
-                                st.metric("Pedidos", int(row.get("Pedidos", 0)))
+                            for idx, row in materiais_departamento.iterrows():
+                                cols = st.columns([3, 1, 1, 1, 1, 1])
 
-                            with cols[2]:
-                                vt = float(row.get("Valor Total", 0.0)) if "Valor Total" in row else 0.0
-                                st.metric("Valor", formatar_moeda_br(vt))
+                                cod = row.get("cod_material") if "cod_material" in materiais_departamento.columns else None
+                                desc = row.get("descricao", "")
 
-                            with cols[3]:
-                                st.metric("Equip.", int(row.get("Equipamentos", 0)) if "Equipamentos" in row else 0)
+                                with cols[0]:
+                                    titulo = f"{desc}"
+                                    if pd.notna(cod) and str(cod).strip():
+                                        titulo = f"{desc}  ·  ({cod})"
+                                    st.markdown(f"**{titulo}**")
 
-                            with cols[4]:
-                                if "Entregues" in row and "Pedidos" in row:
-                                    st.metric("Entregues", f"{int(row.get('Entregues', 0))}/{int(row.get('Pedidos', 0))}")
-                                else:
-                                    st.metric("Entregues", "—")
+                                with cols[1]:
+                                    st.metric("Pedidos", int(row.get("Pedidos", 0)))
 
-                            with cols[5]:
-                                if st.button("Ver Ficha", key=f"dep_{idx}"):
-                                    st.session_state["material_fixo"] = {"cod": cod, "desc": desc}
-                                    st.session_state["tipo_busca_ficha"] = "departamento"
-                                    st.session_state["equipamento_ctx"] = (
-                                        filtro_equipamento_dep if filtro_equipamento_dep != "Todos" else ""
-                                    )
-                                    st.session_state["departamento_ctx"] = departamento_selecionado
-                                    st.rerun()
+                                with cols[2]:
+                                    vt = float(row.get("Valor Total", 0.0)) if "Valor Total" in row else 0.0
+                                    st.metric("Valor", formatar_moeda_br(vt))
 
-                            st.markdown("---")
+                                with cols[3]:
+                                    st.metric("Equip.", int(row.get("Equipamentos", 0)) if "Equipamentos" in row else 0)
+
+                                with cols[4]:
+                                    if "Entregues" in row and "Pedidos" in row:
+                                        st.metric("Entregues", f"{int(row.get('Entregues', 0))}/{int(row.get('Pedidos', 0))}")
+                                    else:
+                                        st.metric("Entregues", "—")
+
+                                with cols[5]:
+                                    if st.button("Ver Ficha", key=f"dep_{idx}"):
+                                        st.session_state["material_fixo"] = {"cod": cod, "desc": desc}
+                                        st.session_state["tipo_busca_ficha"] = "departamento"
+                                        st.session_state["equipamento_ctx"] = (
+                                            filtro_equipamento_dep if filtro_equipamento_dep != "Todos" else ""
+                                        )
+                                        st.session_state["departamento_ctx"] = departamento_selecionado
+                                        st.session_state["modo_ficha_material"] = True
+                                        st.rerun()
+
+                                st.markdown("---")
+
 
     # ============================================================
     # EXIBIR FICHA DO MATERIAL SELECIONADO (COM ABAS)
     # ============================================================
+
+    if modo_ficha:
+        c1, c2 = st.columns([1, 7])
+        with c1:
+            if st.button("← Nova busca", use_container_width=True):
+                st.session_state["modo_ficha_material"] = False
+                st.session_state["material_fixo"] = {"cod": None, "desc": None}
+                st.session_state["tipo_busca_ficha"] = None
+                st.session_state["equipamento_ctx"] = ""
+                st.session_state["departamento_ctx"] = ""
+                st.rerun()
+
     material_key = st.session_state.get("material_fixo", {"cod": None, "desc": None})
     material_selecionado_cod = material_key.get("cod")
     material_selecionado_desc = material_key.get("desc")
@@ -765,7 +827,7 @@ def exibir_ficha_material(_supabase):
             fm.criar_timeline_compras(historico_material)
 
             st.markdown("---")
-            fm.criar_insights_automaticos(historico_material, material_atual)
+            _call_insights_automaticos(historico_material, material_atual)
 
         with tab_hist:
             st.markdown("### 📚 Histórico Detalhado")
