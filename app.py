@@ -7,7 +7,7 @@ st.set_page_config(
     page_icon="📊",
 )
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import src.services.sistema_alertas as sa
 import backup_auditoria as ba
@@ -30,6 +30,32 @@ supabase_admin = init_supabase_admin()
 supabase_anon = init_supabase_anon()
 
 
+
+
+def _jwt_expirou() -> bool:
+    exp = st.session_state.get("auth_expires_at")
+    if not exp:
+        return False
+    try:
+        return datetime.now(timezone.utc).timestamp() >= float(exp) - 30
+    except Exception:
+        return False
+
+
+def _refresh_session() -> bool:
+    """Tenta renovar a sessão usando refresh_token. Retorna True se renovou."""
+    rt = st.session_state.get("auth_refresh_token")
+    if not rt:
+        return False
+    try:
+        res = supabase_anon.auth.refresh_session(rt)
+        session = res.session
+        st.session_state.auth_access_token = session.access_token
+        st.session_state.auth_refresh_token = session.refresh_token
+        st.session_state.auth_expires_at = session.expires_at
+        return True
+    except Exception:
+        return False
 def _safe_len(x) -> int:
     try:
         return int(len(x or []))
@@ -183,6 +209,27 @@ def main():
         return
 
     # Client do usuário autenticado (RLS ativo)
+    # Renova JWT automaticamente se expirou
+
+    if _jwt_expirou():
+
+        ok = _refresh_session()
+
+        if not ok:
+
+            st.warning("Sessão expirada. Faça login novamente.")
+
+            try:
+
+                fazer_logout(supabase_anon)
+
+            except Exception:
+
+                pass
+
+            st.rerun()
+
+
     supabase = get_supabase_user_client(st.session_state.auth_access_token)
 
     # Seleção de empresa (se o usuário tiver mais de uma)
@@ -293,8 +340,7 @@ def main():
         is_admin = st.session_state.usuario.get("perfil") == "admin"
         alertas_label = _label_alertas(total_alertas)
 
-        
-        # ✅ Controle de navegação: permite que "Gestão" funcione mesmo com o menu de Operações preenchido
+        # ✅ Controle de navegação (evita o bug "pagina_ops or pagina_gestao")
         if "current_page" not in st.session_state:
             st.session_state.current_page = "Dashboard"
 
@@ -307,13 +353,22 @@ def main():
         def _set_page_from_gestao_user():
             st.session_state.current_page = st.session_state.get("menu_gestao_user") or st.session_state.current_page
 
+        # Sincroniza seleção inicial (menus começam fechados)
+        if st.session_state.get("menu_ops") is None:
+            st.session_state.menu_ops = "Dashboard"
+        if is_admin and st.session_state.get("menu_gestao_admin") is None:
+            st.session_state.menu_gestao_admin = "Ficha de Material"
+        if (not is_admin) and st.session_state.get("menu_gestao_user") is None:
+            st.session_state.menu_gestao_user = "Ficha de Material"
+
         with st.expander("📊 Operações", expanded=False):
             pagina_ops = st.radio(
                 "",
                 ["Dashboard", alertas_label, "Consultar Pedidos"],
                 label_visibility="collapsed",
                 key="menu_ops",
-            , on_change=_set_page_from_ops)
+                on_change=_set_page_from_ops,
+            )
 
         with st.expander("🛠️ Gestão", expanded=False):
             if is_admin:
@@ -322,22 +377,23 @@ def main():
                     ["Ficha de Material", "Gestão de Pedidos", "Mapa Geográfico", "👥 Gestão de Usuários", "💾 Backup"],
                     label_visibility="collapsed",
                     key="menu_gestao_admin",
-                , on_change=_set_page_from_gestao_admin)
+                    on_change=_set_page_from_gestao_admin,
+                )
             else:
                 pagina_gestao = st.radio(
                     "",
                     ["Ficha de Material", "Mapa Geográfico"],
                     label_visibility="collapsed",
                     key="menu_gestao_user",
+                    on_change=_set_page_from_gestao_user,
                 )
 
-        # Página atual (definida pelos callbacks acima)
-
+        # Página atual (definida pelos callbacks)
         pagina = st.session_state.current_page
+
     # Normaliza label de alertas
     if pagina == alertas_label:
         pagina = "🔔 Alertas e Notificações"
-        st.session_state.current_page = pagina
 
     # ===== Página (pode adicionar filtros na sidebar aqui) =====
     if pagina == "Dashboard":
