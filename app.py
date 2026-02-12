@@ -186,31 +186,36 @@ def main():
     supabase = get_supabase_user_client(st.session_state.auth_access_token)
 
     # Seleção de empresa (se o usuário tiver mais de uma)
-tenant_opts = st.session_state.get("tenant_options", []) or []
-tenant_id = st.session_state.get("tenant_id")
+    tenant_opts = st.session_state.get("tenant_options", []) or []
+    tenant_id = st.session_state.get("tenant_id")
 
-# Define padrão
-if not tenant_id and tenant_opts:
-    tenant_id = tenant_opts[0]["tenant_id"]
-    st.session_state.tenant_id = tenant_id
+    # Define padrão
+    if not tenant_id and tenant_opts:
+        tenant_id = tenant_opts[0]["tenant_id"]
+        st.session_state.tenant_id = tenant_id
 
-# Se o usuário tiver mais de uma empresa, permite escolher
-if tenant_opts and len(tenant_opts) > 1:
-    with st.sidebar:
-        nomes = {t["tenant_id"]: (t.get("nome") or t["tenant_id"]) for t in tenant_opts}
-        current = st.session_state.get("tenant_id") or tenant_opts[0]["tenant_id"]
-        ids = list(nomes.keys())
-        idx = ids.index(current) if current in ids else 0
-        escolhido = st.selectbox("🏢 Empresa", options=ids, format_func=lambda x: nomes.get(x, x), index=idx)
+    # Se o usuário tiver mais de uma empresa, permite escolher
+    if tenant_opts and len(tenant_opts) > 1:
+        with st.sidebar:
+            nomes = {t["tenant_id"]: (t.get("nome") or t["tenant_id"]) for t in tenant_opts}
+            current = st.session_state.get("tenant_id") or tenant_opts[0]["tenant_id"]
+            ids = list(nomes.keys())
+            idx = ids.index(current) if current in ids else 0
+            escolhido = st.selectbox(
+                "🏢 Empresa",
+                options=ids,
+                format_func=lambda x: nomes.get(x, x),
+                index=idx,
+            )
 
-        if escolhido != current:
-            st.session_state.tenant_id = escolhido
-            # atualiza perfil conforme empresa selecionada
-            role = next((t.get("role") for t in tenant_opts if t.get("tenant_id") == escolhido), "user")
-            if "usuario" in st.session_state and isinstance(st.session_state.usuario, dict):
-                st.session_state.usuario["tenant_id"] = escolhido
-                st.session_state.usuario["perfil"] = role
-            st.rerun()
+            if escolhido != current:
+                st.session_state.tenant_id = escolhido
+                # atualiza perfil conforme empresa selecionada
+                role = next((t.get("role") for t in tenant_opts if t.get("tenant_id") == escolhido), "user")
+                if "usuario" in st.session_state and isinstance(st.session_state.usuario, dict):
+                    st.session_state.usuario["tenant_id"] = escolhido
+                    st.session_state.usuario["perfil"] = role
+                st.rerun()
 
     tenant_id = st.session_state.get("tenant_id") or tenant_id
     if not tenant_id:
