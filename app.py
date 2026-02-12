@@ -13,8 +13,8 @@ import src.services.sistema_alertas as sa
 import backup_auditoria as ba
 from src.repositories.fornecedores import carregar_fornecedores
 from src.core.config import configure_page  # noqa: F401
-from src.core.db import init_supabase
-from src.core.auth import verificar_autenticacao, exibir_login
+from src.core.db import init_supabase_admin, init_supabase_anon, get_supabase_user_client
+from src.core.auth import verificar_autenticacao, exibir_login, fazer_logout
 from src.repositories.pedidos import carregar_pedidos
 from src.utils.formatting import formatar_moeda_br
 
@@ -26,7 +26,8 @@ from src.ui.ficha_material_page import exibir_ficha_material
 from src.ui.gestao_usuarios import exibir_gestao_usuarios
 
 # Conexão (cacheada) com Supabase
-supabase = init_supabase()
+supabase_admin = init_supabase_admin()
+supabase_anon = init_supabase_anon()
 
 
 def _safe_len(x) -> int:
@@ -159,7 +160,7 @@ def _sidebar_footer(supabase_client) -> None:
             pass
 
         try:
-            del st.session_state.usuario
+            fazer_logout(supabase_anon)
         except Exception:
             pass
 
@@ -178,11 +179,46 @@ def _sidebar_footer(supabase_client) -> None:
 
 def main():
     if not verificar_autenticacao():
-        exibir_login(supabase)
+        exibir_login(supabase_anon)
         return
 
-    df_pedidos = carregar_pedidos(supabase)
-    df_fornecedores = carregar_fornecedores(supabase, incluir_inativos=True)
+    # Client do usuário autenticado (RLS ativo)
+    supabase = get_supabase_user_client(st.session_state.auth_access_token)
+
+    # Seleção de empresa (se o usuário tiver mais de uma)
+tenant_opts = st.session_state.get("tenant_options", []) or []
+tenant_id = st.session_state.get("tenant_id")
+
+# Define padrão
+if not tenant_id and tenant_opts:
+    tenant_id = tenant_opts[0]["tenant_id"]
+    st.session_state.tenant_id = tenant_id
+
+# Se o usuário tiver mais de uma empresa, permite escolher
+if tenant_opts and len(tenant_opts) > 1:
+    with st.sidebar:
+        nomes = {t["tenant_id"]: (t.get("nome") or t["tenant_id"]) for t in tenant_opts}
+        current = st.session_state.get("tenant_id") or tenant_opts[0]["tenant_id"]
+        ids = list(nomes.keys())
+        idx = ids.index(current) if current in ids else 0
+        escolhido = st.selectbox("🏢 Empresa", options=ids, format_func=lambda x: nomes.get(x, x), index=idx)
+
+        if escolhido != current:
+            st.session_state.tenant_id = escolhido
+            # atualiza perfil conforme empresa selecionada
+            role = next((t.get("role") for t in tenant_opts if t.get("tenant_id") == escolhido), "user")
+            if "usuario" in st.session_state and isinstance(st.session_state.usuario, dict):
+                st.session_state.usuario["tenant_id"] = escolhido
+                st.session_state.usuario["perfil"] = role
+            st.rerun()
+
+    tenant_id = st.session_state.get("tenant_id") or tenant_id
+    if not tenant_id:
+        st.error("❌ Não foi possível determinar sua empresa (tenant).")
+        return
+
+    df_pedidos = carregar_pedidos(supabase, tenant_id)
+    df_fornecedores = carregar_fornecedores(supabase, tenant_id, incluir_inativos=True)
 
     alertas = sa.calcular_alertas(df_pedidos, df_fornecedores)
     total_alertas = int(alertas.get("total", 0) or 0)
