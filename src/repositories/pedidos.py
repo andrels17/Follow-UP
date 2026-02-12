@@ -7,13 +7,16 @@ import pandas as pd
 import streamlit as st
 
 @st.cache_data(ttl=60)
-def carregar_pedidos(_supabase):
+def carregar_pedidos(_supabase, tenant_id: str | None = None):
     """
     Carrega todos os pedidos com informações do fornecedor
     VERSÃO CORRIGIDA com diagnóstico automático de datas
     """
     try:
-        resultado = _supabase.table('vw_pedidos_completo').select('*').execute()
+        q = _supabase.table('vw_pedidos_completo').select('*')
+        if tenant_id:
+            q = q.eq('tenant_id', tenant_id)
+        resultado = q.execute()
         if resultado.data:
             df = pd.DataFrame(resultado.data)
             
