@@ -1,4 +1,6 @@
 import streamlit as st
+import json
+import base64
 import textwrap
 
 st.set_page_config(
@@ -32,14 +34,38 @@ supabase_anon = init_supabase_anon()
 
 
 
-def _jwt_expirou() -> bool:
-    exp = st.session_state.get("auth_expires_at")
-    if not exp:
-        return False
+
+def _jwt_claim_exp(token: str):
+    """Extrai 'exp' (epoch seconds) do JWT sem validar assinatura."""
     try:
-        return datetime.now(timezone.utc).timestamp() >= float(exp) - 30
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        # base64url padding
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
+        return payload.get("exp")
     except Exception:
-        return False
+        return None
+
+
+def _jwt_expirou() -> bool:
+        exp = st.session_state.get("auth_expires_at")
+        if not exp:
+            token = st.session_state.get("auth_access_token")
+            if token:
+                exp = _jwt_claim_exp(token)
+                # guarda pra próximas execuções
+                if exp:
+                    st.session_state.auth_expires_at = exp
+            if not exp:
+                # sem exp conhecido, tenta refresh preventivo
+                return True
+        try:
+            return datetime.now(timezone.utc).timestamp() >= float(exp) - 30
+        except Exception:
+            return False
 
 
 def _refresh_session() -> bool:
