@@ -57,6 +57,7 @@ def fazer_login(email: str, senha: str, supabase_anon):
         # guarda tokens
         st.session_state.auth_access_token = access_token
         st.session_state.auth_refresh_token = refresh_token
+        st.session_state.auth_expires_at = getattr(session, "expires_at", None)
         st.session_state.auth_user_id = user_id
         st.session_state.auth_email = user_email
 
