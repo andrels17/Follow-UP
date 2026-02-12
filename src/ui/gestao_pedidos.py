@@ -469,9 +469,9 @@ def exibir_gestao_pedidos(_supabase):
                                         total_antes = 0
                                     
                                     # Executar limpeza
-                                    _supabase.table("pedidos").delete().neq(
-                                        "id", "00000000-0000-0000-0000-000000000000"
-                                    ).execute()
+                                    tenant_id = st.session_state.get("tenant_id")
+                                    
+                                    _supabase.table("pedidos").delete().eq("tenant_id", tenant_id).execute()
                                     
                                     # Limpar cache
                                     st.cache_data.clear()
@@ -699,10 +699,10 @@ def exibir_gestao_pedidos(_supabase):
                         if limpar_antes:
                             try:
                                 with st.spinner("🗑️ Limpando banco de dados..."):
-                                    _supabase.table("pedidos").delete().neq(
-                                        "id", "00000000-0000-0000-0000-000000000000"
-                                    ).execute()
-                                    st.success("✅ Banco limpo com sucesso!")
+                                    tenant_id = st.session_state.get("tenant_id")
+                                    _supabase.table("pedidos").delete().eq("tenant_id", tenant_id).execute()
+                                    res = _supabase.rpc("reset_tenant_data").execute()
+                                    st.success(f"✅ Limpeza concluída: {res.data}")
                                     st.cache_data.clear()
                             except Exception as e_limpeza:
                                 st.error(f"❌ Erro ao limpar banco: {e_limpeza}")
