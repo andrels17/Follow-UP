@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import streamlit as st
-
+import hashlib
 import backup_auditoria as ba
 from src.core.db import get_supabase_user_client
 
@@ -163,3 +163,11 @@ def exibir_login(supabase_anon):
 
         st.markdown("---")
         st.caption("💡 Primeira vez? Peça ao administrador para criar seu acesso.")
+
+def criar_senha_hash(senha: str) -> str:
+    """
+    Mantida apenas para compatibilidade com gestao_usuarios.
+    Caso esteja usando apenas Supabase Auth,
+    essa função não interfere no login principal.
+    """
+    return hashlib.sha256(senha.encode("utf-8")).hexdigest()
