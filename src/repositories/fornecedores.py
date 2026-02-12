@@ -3,7 +3,7 @@ import pandas as pd
 import streamlit as st
 
 @st.cache_data(ttl=300)
-def carregar_fornecedores(_supabase, incluir_inativos: bool = True) -> pd.DataFrame:
+def carregar_fornecedores(_supabase, tenant_id: str, incluir_inativos: bool = True) -> pd.DataFrame:
     """
     Carrega lista de fornecedores.
 
@@ -11,7 +11,7 @@ def carregar_fornecedores(_supabase, incluir_inativos: bool = True) -> pd.DataFr
     podem referenciar fornecedores desativados.
     """
     try:
-        q = _supabase.table("fornecedores").select("*")
+        q = _supabase.table("fornecedores").select("*").eq("tenant_id", tenant_id)
         if not incluir_inativos:
             q = q.eq("ativo", True)
 
