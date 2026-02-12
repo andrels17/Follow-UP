@@ -7,7 +7,7 @@ st.set_page_config(
     page_icon="📊",
 )
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import src.services.sistema_alertas as sa
 import backup_auditoria as ba
@@ -30,6 +30,32 @@ supabase_admin = init_supabase_admin()
 supabase_anon = init_supabase_anon()
 
 
+
+
+def _jwt_expirou() -> bool:
+    exp = st.session_state.get("auth_expires_at")
+    if not exp:
+        return False
+    try:
+        return datetime.now(timezone.utc).timestamp() >= float(exp) - 30
+    except Exception:
+        return False
+
+
+def _refresh_session() -> bool:
+    """Tenta renovar a sessão usando refresh_token. Retorna True se renovou."""
+    rt = st.session_state.get("auth_refresh_token")
+    if not rt:
+        return False
+    try:
+        res = supabase_anon.auth.refresh_session(rt)
+        session = res.session
+        st.session_state.auth_access_token = session.access_token
+        st.session_state.auth_refresh_token = session.refresh_token
+        st.session_state.auth_expires_at = session.expires_at
+        return True
+    except Exception:
+        return False
 def _safe_len(x) -> int:
     try:
         return int(len(x or []))
@@ -183,6 +209,27 @@ def main():
         return
 
     # Client do usuário autenticado (RLS ativo)
+    # Renova JWT automaticamente se expirou
+
+    if _jwt_expirou():
+
+        ok = _refresh_session()
+
+        if not ok:
+
+            st.warning("Sessão expirada. Faça login novamente.")
+
+            try:
+
+                fazer_logout(supabase_anon)
+
+            except Exception:
+
+                pass
+
+            st.rerun()
+
+
     supabase = get_supabase_user_client(st.session_state.auth_access_token)
 
     # Seleção de empresa (se o usuário tiver mais de uma)
