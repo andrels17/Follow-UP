@@ -405,25 +405,33 @@ def _fu_inject_global_css(sidebar_hidden: bool) -> None:
           background: rgba(239,68,68,0.95) !important;
         }
 
-        /* Sidebar responsiva */
+        /* ===== Sidebar fixa (sem resize/handle) ===== */
         section[data-testid="stSidebar"]{
-          width: clamp(220px, 18vw, 300px) !important;
+          width: 300px !important;
+          min-width: 300px !important;
+          max-width: 300px !important;
           overflow: hidden;
-          transition: width 160ms ease;
+          transition: none !important;
           contain: layout paint style;
           will-change: width;
           backface-visibility: hidden;
           transform: translateZ(0);
         }
-        @media (max-width: 1100px){
-          section[data-testid="stSidebar"]{ width: 240px !important; }
+        /* Remove completamente o "handle" de resize */
+        div[data-testid="stSidebarResizeHandle"]{
+          display: none !important;
+          visibility: hidden !important;
+          width: 0 !important;
         }
+        /* Em telas pequenas, a sidebar vira overlay — ocupar 100% é melhor para toque */
         @media (max-width: 900px){
-          section[data-testid="stSidebar"]{ width: 100% !important; }
+          section[data-testid="stSidebar"]{
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+          }
         }
-        @media (prefers-reduced-motion: reduce){
-          section[data-testid="stSidebar"]{ transition: none !important; }
-        }
+
 
         /* Conta: botões full-width e alinhados */
         section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton > button{
