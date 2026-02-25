@@ -276,6 +276,11 @@ def exibir_dashboard(_supabase):
     """Exibe dashboard principal com KPIs e gráficos"""
 
     apply_theme()
+
+    # Config padrão de renderização Plotly (pode ser sobrescrito por toggles no dashboard)
+    turbo_global = bool(st.session_state.get("dash_turbo", True))
+    plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": turbo_global}
+
     tenant_id = st.session_state.get("tenant_id")
     section_header(
         "Dashboard",
@@ -451,13 +456,28 @@ def exibir_dashboard(_supabase):
         # =========================
         # Controles (aplicar visual)
         # =========================
+        
+        # =========================
+        # Performance: Modo turbo
+        # =========================
+        turbo = st.toggle(
+            "⚡ Modo turbo (mais rápido)",
+            value=bool(st.session_state.get("dash_turbo", True)),
+            help="Reduz custo de renderização (desliga labels em barras e algumas visões secundárias).",
+            key="dash_turbo_toggle",
+        )
+        st.session_state["dash_turbo"] = bool(turbo)
+
+        # Config padrão de renderização Plotly (staticPlot acelera bastante em dashboards densos)
+        plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": bool(turbo)}
         st.subheader("Resumo acionável")
 
         default_viz = {
-            "compacto": bool(mobile_now),
+            "compacto": bool(mobile_now) or bool(st.session_state.get("dash_turbo", True)),
             "show_trend": True,
-            "show_rank": True,
-            "show_aging": True,
+            # Em modo turbo, reduzir visões secundárias para ficar mais leve
+            "show_rank": (not bool(st.session_state.get("dash_turbo", True))),
+            "show_aging": (not bool(st.session_state.get("dash_turbo", True))),
             "show_action": True,
             "show_details": False,
             "show_dist": True,
@@ -545,7 +565,7 @@ def exibir_dashboard(_supabase):
                     fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), legend_title_text="")
                     return fig
                 fig_p = _fig_memo("dist_pie", sig, _build_pie)
-                st.plotly_chart(fig_p, use_container_width=True)
+                st.plotly_chart(fig_p, use_container_width=True, config=plot_config)
             with c2:
                 def _build_bar():
                     fig = px.bar(dist, x="grupo", y="valor")
@@ -554,7 +574,7 @@ def exibir_dashboard(_supabase):
                     style_plotly(fig, kind="bar", height=280, force_single_color=True)
                     return fig
                 fig_v = _fig_memo("dist_bar", sig, _build_bar)
-                st.plotly_chart(fig_v, use_container_width=True)
+                st.plotly_chart(fig_v, use_container_width=True, config=plot_config)
 
         # =========================
 
@@ -620,14 +640,14 @@ def exibir_dashboard(_supabase):
                 fig_uf = _fig_memo("geo_uf", f"{sig}:{xcol}", _build_fig_uf)
 
                 st.caption("Clique em uma barra para abrir a Consulta já filtrada pela UF.")
-                if plotly_events is not None:
+                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))):
                     sel = plotly_events(fig_uf, click_event=True, hover_event=False, select_event=False, key="dash_drill_uf")
                     if sel:
                         uf = sel[0].get("y") or sel[0].get("x")
                         if uf:
                             _drill_to_consulta(uf=str(uf))
                 else:
-                    st.plotly_chart(fig_uf, use_container_width=True)
+                    st.plotly_chart(fig_uf, use_container_width=True, config=plot_config)
                     uf_pick = st.selectbox("Ir para Consulta (UF)", [""] + g_uf["UF"].astype(str).tolist(), key="dash_uf_pick")
                     if uf_pick:
                         _drill_to_consulta(uf=uf_pick)
@@ -676,14 +696,14 @@ def exibir_dashboard(_supabase):
                 fig_dep = _fig_memo("geo_dep", f"{sig}:{xcol}", _build_fig_dep)
 
                 st.caption("Clique em uma barra para abrir a Consulta já filtrada pelo Departamento.")
-                if plotly_events is not None:
+                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))):
                     sel = plotly_events(fig_dep, click_event=True, hover_event=False, select_event=False, key="dash_drill_dept")
                     if sel:
                         dep = sel[0].get("y") or sel[0].get("x")
                         if dep:
                             _drill_to_consulta(dept=str(dep))
                 else:
-                    st.plotly_chart(fig_dep, use_container_width=True)
+                    st.plotly_chart(fig_dep, use_container_width=True, config=plot_config)
                     dep_pick = st.selectbox("Ir para Consulta (Departamento)", [""] + g_dep["Departamento"].astype(str).tolist(), key="dash_dep_pick")
                     if dep_pick:
                         _drill_to_consulta(dept=dep_pick)
@@ -722,7 +742,7 @@ def exibir_dashboard(_supabase):
                         fig_q.update_layout(barmode="stack", height=320, margin=dict(l=10, r=10, t=10, b=10),
                                             xaxis_title="Semana", yaxis_title="Qtd")
                         style_plotly(fig_q, kind="bar", height=360)
-                        st.plotly_chart(fig_q, use_container_width=True)
+                        st.plotly_chart(fig_q, use_container_width=True, config=plot_config)
 
                         # 2) linha de valor pendente (se não estiver em mobile/compacto)
                         if not mobile_now and not compacto:
@@ -732,7 +752,7 @@ def exibir_dashboard(_supabase):
                             fig_val.update_layout(height=260, margin=dict(l=10, r=30, t=10, b=10),
                                                   xaxis_title="Semana", yaxis_title="Valor (R$)")
                             style_plotly(fig_val, kind="bar", height=360)
-                            st.plotly_chart(fig_val, use_container_width=True)
+                            st.plotly_chart(fig_val, use_container_width=True, config=plot_config)
                     else:
                         st.caption("Sem dados suficientes para tendência.")
 
@@ -770,7 +790,7 @@ def exibir_dashboard(_supabase):
                                     fig_f.update_layout(height=360, margin=dict(l=10, r=40, t=10, b=10),
                                                         xaxis_title="Valor em risco (R$)", yaxis_title="")
                                     style_plotly(fig_f, kind="bar", height=360, force_single_color=True)
-                                    st.plotly_chart(fig_f, use_container_width=True)
+                                    st.plotly_chart(fig_f, use_container_width=True, config=plot_config)
                                 else:
                                     st.caption("Sem pedidos em risco no recorte.")
                             else:
@@ -797,7 +817,7 @@ def exibir_dashboard(_supabase):
                                     fig_d.update_traces(text=d.values, texttemplate="%{text}", textposition="outside", cliponaxis=False)
                                     fig_d.update_layout(height=360, margin=dict(l=10, r=40, t=10, b=10),
                                                         xaxis_title="Quantidade", yaxis_title="")
-                                    st.plotly_chart(fig_d, use_container_width=True)
+                                    st.plotly_chart(fig_d, use_container_width=True, config=plot_config)
                                 else:
                                     st.caption("Sem pedidos em risco no recorte.")
                             else:
@@ -823,7 +843,7 @@ def exibir_dashboard(_supabase):
                             fig_a.update_layout(height=320, margin=dict(l=10, r=40, t=10, b=10),
                                                 xaxis_title="Dias em atraso", yaxis_title="Quantidade")
                             style_plotly(fig_a, kind="bar", height=320, force_single_color=True)
-                            st.plotly_chart(fig_a, use_container_width=True)
+                            st.plotly_chart(fig_a, use_container_width=True, config=plot_config)
                         else:
                             ux.ok("Sem pedidos atrasados no recorte atual.")
 
@@ -846,7 +866,7 @@ def exibir_dashboard(_supabase):
                         fig_s.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10),
                                             xaxis_title="Dias para vencimento (negativo = atraso)", yaxis_title="Valor (R$)")
                         style_plotly(fig_s, kind="bar")
-                        st.plotly_chart(fig_s, use_container_width=True)
+                        st.plotly_chart(fig_s, use_container_width=True, config=plot_config)
 
                     # =========================
                     # Aja agora (paginado + ver mais)

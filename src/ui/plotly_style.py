@@ -135,6 +135,9 @@ def add_bar_labels(
             show_labels = bool(st.session_state.get("show_chart_labels", True))
             if mobile or (not show_labels):
                 return fig
+            # Em modo turbo do dashboard, forçar labels OFF (hover já cobre)
+            if bool(st.session_state.get(\"dash_turbo\", False)):
+                return fig
     except Exception:
         pass
 
