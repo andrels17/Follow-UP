@@ -407,9 +407,9 @@ def _fu_inject_global_css(sidebar_hidden: bool) -> None:
 
         /* Sidebar fixa (sem resize/handle) */
         section[data-testid="stSidebar"]{
-          width: 300px !important;
-          min-width: 300px !important;
-          max-width: 300px !important;
+          width: 280px !important;
+          min-width: 280px !important;
+          max-width: 280px !important;
           overflow: hidden;
           contain: layout paint style;
           will-change: auto;
