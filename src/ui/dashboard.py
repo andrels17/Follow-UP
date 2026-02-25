@@ -279,7 +279,8 @@ def exibir_dashboard(_supabase):
 
     # Config padrão de renderização Plotly (pode ser sobrescrito por toggles no dashboard)
     turbo_global = bool(st.session_state.get("dash_turbo", True))
-    plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": turbo_global}
+    fast_global = bool(st.session_state.get("dash_fast_charts", True))
+    plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": (turbo_global or fast_global)}
 
     tenant_id = st.session_state.get("tenant_id")
     section_header(
@@ -468,6 +469,14 @@ def exibir_dashboard(_supabase):
         )
         st.session_state["dash_turbo"] = bool(turbo)
 
+        fast_charts = st.toggle(
+            "🚀 Gráficos leves (melhor performance)",
+            value=bool(st.session_state.get("dash_fast_charts", True)),
+            help="Desativa interações pesadas e labels em barras quando necessário. Ideal para deixar o scroll/expanders mais fluidos.",
+            key="dash_fast_charts_toggle",
+        )
+        st.session_state["dash_fast_charts"] = bool(fast_charts)
+
         # Config padrão de renderização Plotly (staticPlot acelera bastante em dashboards densos)
         plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": bool(turbo)}
         st.subheader("Resumo acionável")
@@ -640,7 +649,7 @@ def exibir_dashboard(_supabase):
                 fig_uf = _fig_memo("geo_uf", f"{sig}:{xcol}", _build_fig_uf)
 
                 st.caption("Clique em uma barra para abrir a Consulta já filtrada pela UF.")
-                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))):
+                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))) and (not bool(st.session_state.get('dash_fast_charts', True))):
                     sel = plotly_events(fig_uf, click_event=True, hover_event=False, select_event=False, key="dash_drill_uf")
                     if sel:
                         uf = sel[0].get("y") or sel[0].get("x")
@@ -696,7 +705,7 @@ def exibir_dashboard(_supabase):
                 fig_dep = _fig_memo("geo_dep", f"{sig}:{xcol}", _build_fig_dep)
 
                 st.caption("Clique em uma barra para abrir a Consulta já filtrada pelo Departamento.")
-                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))):
+                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))) and (not bool(st.session_state.get('dash_fast_charts', True))):
                     sel = plotly_events(fig_dep, click_event=True, hover_event=False, select_event=False, key="dash_drill_dept")
                     if sel:
                         dep = sel[0].get("y") or sel[0].get("x")

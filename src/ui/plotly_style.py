@@ -138,6 +138,9 @@ def add_bar_labels(
             # Em modo turbo do dashboard, forçar labels OFF (hover já cobre)
             if bool(st.session_state.get("dash_turbo", False)):
                 return fig
+            # Em "gráficos leves", desativar labels para ganhar performance
+            if bool(st.session_state.get("dash_fast_charts", False)):
+                return fig
     except Exception:
         pass
 
