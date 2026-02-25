@@ -286,9 +286,14 @@ def exibir_dashboard(_supabase):
     section_header(
         "Dashboard",
         hint="Follow-up de pedidos, prazos e gastos.",
-        pill=f"Tenant: {tenant_id}" if tenant_id else None,
+        pill=None,
         accent=True,
     )
+
+    # Contexto técnico (evita poluir o header)
+    if tenant_id:
+        with st.expander("Contexto técnico", expanded=False):
+            st.code(f"Tenant: {tenant_id}")
     
     # Carregar dados (cache curto para evitar consultas repetidas em reruns)
     ttl_s = 120
@@ -398,37 +403,37 @@ def exibir_dashboard(_supabase):
     valor_total = float(df_view["_valor"].sum())
     valor_em_risco = float(atrasados["_valor"].sum() + vencendo["_valor"].sum())
 
-    # Linha principal (4 KPIs) - padrão UI System
-    kpi_row(
-        [
-            ("Pendentes", formatar_numero_br(pedidos_pendentes).split(",")[0], None),
-            ("Atrasados", formatar_numero_br(pedidos_atrasados).split(",")[0], None),
-            ("Vencendo (≤3d)", formatar_numero_br(pedidos_vencendo).split(",")[0], None),
-            ("Valor em risco", formatar_moeda_br(valor_em_risco), None),
-        ],
-        cols=4,
-    )
-
-    # Ações rápidas (compactas)
-    a1, a2, a3 = rcols(3)
-    with a1:
-        if st.button("Ver atrasados", use_container_width=True, key="dash_go_atrasados"):
-            st.session_state["quick_filter"] = {"tipo": "atrasados"}
-            st.session_state.current_page = "Consultar Pedidos"
+    # KPIs clicáveis (menos poluição: o próprio KPI vira ação)
+    st.markdown('<div class="fu-kpi-main-click">', unsafe_allow_html=True)
+    c1, c2, c3, c4 = rcols(4)
+    with c1:
+        if st.button(f"Pendentes\n{formatar_numero_br(pedidos_pendentes).split(',')[0]}", use_container_width=True, key="dash_kpi_pendentes"):
+            st.session_state["consulta_nav_mode"] = "pendentes"
+            st.session_state.current_page = "orders_search"
+            st.session_state["_force_menu_sync"] = True
             st.rerun()
-    with a2:
-        if st.button("Ver vencendo", use_container_width=True, key="dash_go_vencendo"):
-            st.session_state["quick_filter"] = {"tipo": "vencendo"}
-            st.session_state.current_page = "Consultar Pedidos"
+    with c2:
+        if st.button(f"Atrasados\n{formatar_numero_br(pedidos_atrasados).split(',')[0]}", use_container_width=True, key="dash_kpi_atrasados"):
+            st.session_state["consulta_nav_mode"] = "atrasados"
+            st.session_state.current_page = "orders_search"
+            st.session_state["_force_menu_sync"] = True
             st.rerun()
-    with a3:
-        if st.button("Ver críticos", use_container_width=True, key="dash_go_criticos"):
-            st.session_state["quick_filter"] = {"tipo": "criticos"}
-            st.session_state.current_page = "Consultar Pedidos"
+    with c3:
+        if st.button(f"Vencendo (≤3d)\n{formatar_numero_br(pedidos_vencendo).split(',')[0]}", use_container_width=True, key="dash_kpi_vencendo"):
+            st.session_state["consulta_nav_mode"] = "vencendo"
+            st.session_state.current_page = "orders_search"
+            st.session_state["_force_menu_sync"] = True
             st.rerun()
+    with c4:
+        if st.button(f"Valor em risco\n{formatar_moeda_br(valor_em_risco)}", use_container_width=True, key="dash_kpi_risco"):
+            st.session_state["consulta_nav_mode"] = "risco"
+            st.session_state.current_page = "orders_search"
+            st.session_state["_force_menu_sync"] = True
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Detalhes (só se o usuário abrir)
-    with st.expander("Detalhes (totais, entregues, críticos, valor total)", expanded=False):
+    with st.expander("Detalhes", expanded=False):
         d1, d2, d3, d4 = rcols(4)
         with d1:
             st.metric("Total", formatar_numero_br(total_pedidos).split(",")[0])

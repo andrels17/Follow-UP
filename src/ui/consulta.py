@@ -83,6 +83,24 @@ def _badge_status(s: str) -> str:
     return f"⚪ {s}"
 
 
+def _dt_series(df: pd.DataFrame, col: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series([pd.NaT] * len(df), index=df.index)
+    return pd.to_datetime(df[col], errors="coerce")
+
+
+def _compute_due_dates(df: pd.DataFrame) -> pd.Series:
+    """Calcula a data 'due' com a mesma regra do Dashboard/Alertas.
+
+    previsao_entrega > prazo_entrega > data_oc + 30 dias
+    """
+    prev = _dt_series(df, "previsao_entrega")
+    prazo = _dt_series(df, "prazo_entrega")
+    data_oc = _dt_series(df, "data_oc")
+    fallback = data_oc + pd.to_timedelta(30, unit="D")
+    return prev.fillna(prazo).fillna(fallback)
+
+
 def _status_pill(status: str) -> str:
     """Badge HTML (cor real) para usar em st.markdown(unsafe_allow_html=True)."""
     s = "" if status is None else str(status).strip()
@@ -340,6 +358,14 @@ def _apply_filters(
     """Aplica filtros estáveis (multiselect) + busca + atrasados + códigos numéricos."""
     out = df
 
+    # Navegação vinda do Dashboard (por KPI): restringe a um conjunto de IDs
+    nav_ids = st.session_state.get("consulta_nav_ids")
+    if nav_ids and isinstance(nav_ids, set):
+        try:
+            out = out.loc[out.index.intersection(nav_ids)]
+        except Exception:
+            pass
+
     if deptos and "departamento" in out.columns:
         out = out[out["departamento"].isin(deptos)]
 
@@ -374,6 +400,25 @@ def _apply_filters(
 
     if somente_atrasados:
         out = out[_is_atrasado(out)]
+
+    # Filtro por janela de vencimento (quando aplicado via KPI)
+    win = st.session_state.get("consulta_due_window")
+    if win in ("vencendo", "risco"):
+        try:
+            entregue = out.get("entregue", pd.Series([False] * len(out))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+            due = _compute_due_dates(out)
+            hoje = pd.Timestamp.now().normalize()
+            limite = hoje + pd.Timedelta(days=3)
+            flag_atrasado = out.get("atrasado", pd.Series([False] * len(out))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+            if win == "vencendo":
+                out = out[(~entregue) & (due.notna() & (due >= hoje) & (due <= limite))]
+            else:  # risco
+                out = out[(~entregue) & (
+                    flag_atrasado | (due.notna() & (due < hoje)) |
+                    (due.notna() & (due >= hoje) & (due <= limite))
+                )]
+        except Exception:
+            pass
 
     return out
 
@@ -580,6 +625,7 @@ def exibir_consulta_pedidos(_supabase):
     # -------------------- Estado padrão (filtros + seleção)
     st.session_state.setdefault("c_q", "")
     st.session_state.setdefault("c_deptos", [])
+    st.session_state.setdefault("c_uf", [])
     st.session_state.setdefault("c_status_list", [])
     st.session_state.setdefault("c_cod_equip", "")
     st.session_state.setdefault("c_cod_mat", "")
@@ -590,6 +636,49 @@ def exibir_consulta_pedidos(_supabase):
     st.session_state.setdefault("consulta_auto_opened_pid", None)
     st.session_state.setdefault("consulta_selected_label", "")
     st.session_state.setdefault("go_key", "")
+
+    # -------------------- Navegação por KPIs (Dashboard -> Consulta)
+    # Usa uma chave simples e remove após aplicar, para não "grudar".
+    nav_mode = st.session_state.pop("consulta_nav_mode", None)
+    if nav_mode:
+        nav_mode = str(nav_mode).strip().lower()
+        st.session_state["c_pag"] = 1
+        # limpa filtros que normalmente atrapalham uma navegação rápida
+        st.session_state["c_status_list"] = []
+        st.session_state["c_deptos"] = st.session_state.get("c_deptos", []) or []
+        st.session_state["c_uf"] = st.session_state.get("c_uf", []) or []
+        st.session_state["c_atraso"] = False
+
+        # aplica por regra equivalente ao Dashboard
+        base = df.copy()
+        entregue = base.get("entregue", pd.Series([False] * len(base))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+        due = _compute_due_dates(base)
+        hoje = pd.Timestamp.now().normalize()
+        limite = hoje + pd.Timedelta(days=3)
+        flag_atrasado = base.get("atrasado", pd.Series([False] * len(base))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+
+        if nav_mode == "pendentes":
+            mask = ~entregue
+        elif nav_mode == "atrasados":
+            mask = (~entregue) & (flag_atrasado | (due.notna() & (due < hoje)))
+            st.session_state["c_atraso"] = True
+        elif nav_mode == "vencendo":
+            mask = (~entregue) & (due.notna() & (due >= hoje) & (due <= limite))
+            st.session_state["consulta_due_window"] = "vencendo"
+        elif nav_mode == "risco":
+            mask = (~entregue) & (
+                flag_atrasado | (due.notna() & (due < hoje)) |
+                (due.notna() & (due >= hoje) & (due <= limite))
+            )
+            st.session_state["consulta_due_window"] = "risco"
+        else:
+            mask = pd.Series([True] * len(base), index=base.index)
+
+        # guarda um filtro rápido por IDs para ser aplicado no _apply_filters
+        try:
+            st.session_state["consulta_nav_ids"] = set(base.loc[mask].index.tolist())
+        except Exception:
+            st.session_state["consulta_nav_ids"] = None
     # -------------------- Presets/Atalhos (robusto, evita StreamlitAPIException)
     # Regras:
     # - Callback (on_change/on_click) roda antes de renderizar widgets -> seguro para setar chaves

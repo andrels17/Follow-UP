@@ -582,11 +582,39 @@ def _industrial_sidebar_css() -> None:
                 align-items: center !important;
                 justify-content: center !important;
             }
+
+            /* Força todos os KPIs da sidebar a terem exatamente a mesma altura */
+            .fu-kpi-click .stButton{ height: 88px !important; }
+            .fu-kpi-click .stButton > button{ height: 100% !important; }
             .fu-kpi-click .stButton button:hover{
                 border-color: rgba(239,68,68,0.30) !important;
                 background: rgba(255,255,255,0.06) !important;
                 transform: translateY(-1px);
             }
+
+            /* KPIs clicáveis no corpo (Dashboard etc.) */
+            .fu-kpi-main-click .stButton{ height: 92px !important; }
+            .fu-kpi-main-click .stButton > button{
+                height: 100% !important;
+                background: rgba(255,255,255,0.035) !important;
+                border: 1px solid rgba(255,255,255,0.10) !important;
+                border-radius: 16px !important;
+                padding: 14px 12px !important;
+                font-weight: 900 !important;
+                text-align: left !important;
+                white-space: pre-line !important;
+                line-height: 1.05 !important;
+                display:flex !important;
+                align-items:center !important;
+                justify-content:flex-start !important;
+                gap: 10px !important;
+            }
+            .fu-kpi-main-click .stButton > button:hover{
+                border-color: rgba(239,68,68,0.30) !important;
+                background: rgba(255,255,255,0.055) !important;
+                transform: translateY(-1px);
+            }
+            .fu-kpi-main-click .stButton > button:active{ transform: translateY(0px); }
 
 /* KPIs responsivos (evita “prensar” em mobile) */
 @media (max-width: 520px){
