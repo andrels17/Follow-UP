@@ -405,38 +405,36 @@ def _fu_inject_global_css(sidebar_hidden: bool) -> None:
           background: rgba(239,68,68,0.95) !important;
         }
 
-        
-/* Sidebar fixa (sem resize) */
-section[data-testid="stSidebar"]{
-  width: 300px !important;
-  min-width: 300px !important;
-  max-width: 300px !important;
-  flex: 0 0 300px !important;
-  overflow: hidden;
-  contain: layout paint style;
-  will-change: auto;
-  backface-visibility: hidden;
-  transform: translateZ(0);
-}
+        /* Sidebar fixa (sem resize/handle) */
+        section[data-testid="stSidebar"]{
+          width: 300px !important;
+          min-width: 300px !important;
+          max-width: 300px !important;
+          overflow: hidden;
+          contain: layout paint style;
+          will-change: auto;
+          backface-visibility: hidden;
+          transform: translateZ(0);
+        }
 
-/* Remove COMPLETAMENTE o resize/handle */
-div[data-testid="stSidebarResizeHandle"],
-div[data-testid="stSidebarResizer"]{
-  display: none !important;
-  visibility: hidden !important;
-  width: 0 !important;
-  pointer-events: none !important;
-}
+        /* Remove completamente o handle/resizer do Streamlit */
+        div[data-testid="stSidebarResizeHandle"],
+        div[data-testid="stSidebarResizer"],
+        div[data-testid="stSidebarResizeHandle"] *,
+        div[data-testid="stSidebarResizer"] *{
+          display: none !important;
+          visibility: hidden !important;
+          width: 0 !important;
+        }
 
-/* Mobile: sidebar em overlay ocupa a largura toda */
-@media (max-width: 900px){
-  section[data-testid="stSidebar"]{
-    width: 100% !important;
-    min-width: 100% !important;
-    max-width: 100% !important;
-    flex: 0 0 100% !important;
-  }
-}
+        /* Mobile: sidebar vira overlay full-width (padrão Streamlit) */
+        @media (max-width: 900px){
+          section[data-testid="stSidebar"]{
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+          }
+        }
 /* Conta: botões full-width e alinhados */
         section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton > button{
           width: 100% !important;
