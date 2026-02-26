@@ -1,1112 +1,2169 @@
-from __future__ import annotations
-
-import math
-import io
-import re
-import datetime
-
-import pandas as pd
 import streamlit as st
-
 from src.ui import ux
-
-# Repositórios (mantém compatibilidade com a estrutura do projeto)
-try:
-    from src.repositories.pedidos import carregar_pedidos
-except Exception:  # pragma: no cover
-    carregar_pedidos = None  # type: ignore
-
-try:
-    from src.repositories.pedidos import atualizar_status_pedido  # type: ignore
-except Exception:  # pragma: no cover
-    atualizar_status_pedido = None  # type: ignore
-
-
-def _get_cached_pedidos(_supabase, tenant_id: str | None):
-    """Cache leve em session_state para evitar refetch a cada rerun."""
-    st.session_state.setdefault("_cache_pedidos", {})
-    key = str(tenant_id or "default")
-    entry = st.session_state["_cache_pedidos"].get(key)
-    if entry and isinstance(entry, dict) and "df" in entry and "ts" in entry:
-        # TTL 60s
-        if (datetime.datetime.now().timestamp() - float(entry["ts"])) < 60:
-            return entry["df"]
-    df = carregar_pedidos(_supabase, tenant_id)  # type: ignore[misc]
-    st.session_state["_cache_pedidos"][key] = {"df": df, "ts": datetime.datetime.now().timestamp()}
-    return df
-
-def _clear_cached_pedidos(tenant_id: str | None):
-    st.session_state.setdefault("_cache_pedidos", {})
-    key = str(tenant_id or "default")
-    st.session_state["_cache_pedidos"].pop(key, None)
-
-
-
-
-# Compat: st.popover existe só em versões mais novas do Streamlit.
-# Este helper usa popover quando disponível e cai para expander quando não.
-def _popover_or_expander(label: str, *, use_container_width: bool = True):
-    if hasattr(st, "popover"):
-        return st.popover(label, use_container_width=use_container_width)  # type: ignore[attr-defined]
-    return st.expander(label, expanded=False)
-
-
-def _to_str(x) -> str:
-    """Converte valores para string sem 'nan/None'."""
-    try:
-        import pandas as pd
-        if x is None or (isinstance(x, float) and pd.isna(x)) or pd.isna(x):
-            return ""
-    except Exception:
-        if x is None:
-            return ""
-    return str(x)
-
-def _badge_status(s: str) -> str:
-    """Prefixa status com indicador visual (emoji)."""
-    s = "" if s is None else str(s)
-    s0 = s.strip().lower()
-
-    if s0 in ["entregue", "entregues", "finalizado", "concluído", "concluido", "encerrado"]:
-        return f"🟢 {s}"
-    if s0 in ["tem oc", "com oc"]:
-        return f"🟢 {s}"
-    if s0 in ["em transporte", "transporte"]:
-        return f"🟠 {s}"
-    if s0 in ["sem oc", "sem pedido", "sem oc/sol", "sem oc/solicitação"]:
-        return f"🔵 {s}"
-    if s0 in ["atrasado", "vencido", "em atraso", "crítico", "critico"]:
-        return f"🔴 {s}"
-    if s0 in ["em aberto", "aberto", "pendente", "em andamento"]:
-        return f"🟡 {s}"
-
-    return f"⚪ {s}"
-
-
-def _dt_series(df: pd.DataFrame, col: str) -> pd.Series:
-    if col not in df.columns:
-        return pd.Series([pd.NaT] * len(df), index=df.index)
-    return pd.to_datetime(df[col], errors="coerce")
-
-
-def _compute_due_dates(df: pd.DataFrame) -> pd.Series:
-    """Calcula a data 'due' com a mesma regra do Dashboard/Alertas.
-
-    previsao_entrega > prazo_entrega > data_oc + 30 dias
-    """
-    prev = _dt_series(df, "previsao_entrega")
-    prazo = _dt_series(df, "prazo_entrega")
-    data_oc = _dt_series(df, "data_oc")
-    fallback = data_oc + pd.to_timedelta(30, unit="D")
-    return prev.fillna(prazo).fillna(fallback)
-
-
-def _status_pill(status: str) -> str:
-    """Badge HTML (cor real) para usar em st.markdown(unsafe_allow_html=True)."""
-    s = "" if status is None else str(status).strip()
-    s0 = s.lower()
-
-    # cores (ajuste se necessário)
-    if s0 in ["entregue", "entregues", "finalizado", "concluído", "concluido", "encerrado"]:
-        bg, fg = "#103B1A", "#CFF7D6"  # verde
-        dot = "🟢"
-    elif s0 in ["em aberto", "aberto", "pendente", "em andamento", "em transporte", "transporte"]:
-        bg, fg = "#3A2D0A", "#FFE6A7"  # amarelo
-        dot = "🟡" if "transporte" not in s0 else "🟠"
-    elif s0 in ["atrasado", "vencido", "em atraso", "crítico", "critico"]:
-        bg, fg = "#3A1010", "#FFD0D0"  # vermelho
-        dot = "🔴"
-    elif s0 in ["sem oc", "sem pedido", "sem oc/sol", "sem oc/solicitação"]:
-        bg, fg = "#1D2330", "#D7E3FF"  # azul/cinza
-        dot = "🔵"
-    else:
-        bg, fg = "#22242A", "#E6E6E6"
-        dot = "⚪"
-
-    return (
-        f"<span style='display:inline-flex;align-items:center;gap:.35rem;"
-        f"padding:.2rem .55rem;border-radius:999px;background:{bg};color:{fg};"
-        f"border:1px solid rgba(255,255,255,.08);font-size:.85rem;'>"
-        f"<span style='font-size:.85rem'>{dot}</span><span>{s}</span></span>"
-    )
-
-
-
-
-def _status_html(status: str) -> str:
-    """Retorna um pill HTML com cor (para usar com unsafe_allow_html=True)."""
-    s = "" if status is None else str(status).strip()
-    s0 = s.lower()
-
-    if s0 in ["entregue", "entregues", "finalizado", "concluído", "concluido", "encerrado"]:
-        cls = "st-pill st-pill-green"
-    elif s0 in ["atrasado", "vencido", "em atraso", "crítico", "critico"]:
-        cls = "st-pill st-pill-red"
-    elif s0 in ["em transporte", "transporte"]:
-        cls = "st-pill st-pill-orange"
-    elif s0 in ["sem oc", "sem pedido", "sem oc/sol", "sem oc/solicitação"]:
-        cls = "st-pill st-pill-blue"
-    elif s0 in ["em aberto", "aberto", "pendente", "em andamento"]:
-        cls = "st-pill st-pill-yellow"
-    else:
-        cls = "st-pill st-pill-neutral"
-
-    return f"<span class='{cls}'>{s or '—'}</span>"
-
-
-
-def _render_lista_erp_com_olho(page: pd.DataFrame, show_cols: list[str]) -> str | None:
-    """Renderiza uma lista estilo ERP com botão 👁️ por linha (seleção única, intuitiva).
-    Retorna o pid (id) quando o usuário clicar em 👁️, senão None.
-    """
-    if "id" not in page.columns:
-        return None
-
-    # CSS local: evita que descrições longas "invadam" outras colunas
-    st.markdown(
-        """
-        <style>
-
-          .fu-erp-list [data-testid="column"]{ min-width: 0 !important; }
-          .fu-erp-list [data-testid="stHorizontalBlock"]{ gap: 0.5rem !important; }
-          .fu-erp-list div[data-testid="stButton"]{ width: 100% !important; }
-          .fu-erp-list div[data-testid="stButton"] > button{
-            max-width: 100% !important;
-            display: block !important;
-          }
-          .fu-erp-list div[data-testid="stButton"] > button *{
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-            white-space: nowrap !important;
-            max-width: 100% !important;
-          }
-
-          .fu-erp-list div[data-testid="stButton"] > button{
-            width: 100% !important;
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-            white-space: nowrap !important;
-            min-height: 38px !important;
-          }
-          .fu-erp-list [data-testid="stButton"]{ margin-bottom: 0 !important; }
-          .fu-erp-list .fu-erp-sep hr{ margin: 6px 0 !important; opacity: .25; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="fu-erp-list">', unsafe_allow_html=True)
-
-
-    mobile = bool(st.session_state.get("mobile_mode", False))
-
-    # Cabeçalho (desktop)
-    if not mobile:
-        header_cols = st.columns([0.6, 1.4, 3.6, 1.2, 1.1, 1.2, 1.2])
-        header_cols[0].markdown("**Ver**")
-        header_cols[1].markdown("**Equip.**")
-        header_cols[2].markdown("**Descrição**")
-        header_cols[3].markdown("**OC / SOL**")
-        header_cols[4].markdown("**Depto**")
-        header_cols[5].markdown("**Status**")
-        header_cols[6].markdown("**Valor**")
-        st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
-
-    else:
-        st.caption("Toque em 👁️ para abrir as ações do pedido.")
-        st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
-
-    for i, r in page.reset_index(drop=False).iterrows():
-        # r contém a coluna "index" do df original (drop=False) — útil se precisar
-        pid = str(r.get("id"))
-
-        cod_eq = _to_str(r.get("cod_equipamento"))
-        desc = _to_str(r.get("descricao"))
-        oc = _to_str(r.get("nr_oc"))
-        sol = _to_str(r.get("nr_solicitacao"))
-        depto = _to_str(r.get("departamento"))
-        status_txt = _badge_status(_to_str(r.get("status")))
-
-        # valor
-        val = r.get("valor_total")
-        try:
-            val_f = float(val) if val not in (None, "") else 0.0
-            val_str = f"R$ {val_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        except Exception:
-            val_str = _to_str(val)
-
-        if mobile:
-            # Card compacto (mobile)
-            top = st.columns([0.82, 0.18])
-            with top[0]:
-                desc_full = str(desc or "").replace("\n", " ").replace("\r", " ").strip()
-                desc_full = re.sub(r"\s+", " ", desc_full)
-                st.markdown(f"**{(desc_full or '—')}**")
-                st.caption(f"Equip.: {cod_eq or '—'}  •  OC/SOL: {oc or '—'} / {sol or '—'}")
-                st.caption(f"Depto: {depto or '—'}  •  {val_str or '—'}")
-                st.markdown(_status_html(_to_str(r.get('status'))), unsafe_allow_html=True)
-            with top[1]:
-                if st.button("👁️", key=f"see_{pid}", help="Abrir ações deste pedido", use_container_width=True):
-                    return pid
-            st.markdown('<div class="fu-erp-sep"><hr></div>', unsafe_allow_html=True)
-
-        else:
-            c = st.columns([0.6, 1.4, 3.6, 1.2, 1.1, 1.2, 1.2])
-
-            with c[0]:
-                if st.button("👁️", key=f"see_{pid}", help="Abrir ações deste pedido", use_container_width=True):
-                    return pid
-
-            with c[1]:
-                st.caption(cod_eq or "—")
-
-            with c[2]:
-                # descrição (curta) + botão de info (abre modal com texto completo)
-                desc = str(desc or "").replace("\n", " ").replace("\r", " ").strip()
-                desc = re.sub(r"\s+", " ", desc)
-
-                MAX_DESC = 55  # limita visual para não invadir outras colunas
-                short = (desc[: MAX_DESC - 1] + "…") if len(desc) > MAX_DESC else desc
-                label = short or "—"
-                if st.button(label, key=f"row_{pid}", help="Abrir ações deste pedido", use_container_width=True):
-                    return pid
-
-            with c[3]:
-                st.caption(f"{oc or '—'} / {sol or '—'}")
-
-            with c[4]:
-                st.caption(depto or "—")
-
-            with c[5]:
-                st.markdown(_status_html(_to_str(r.get('status'))), unsafe_allow_html=True)
-
-            with c[6]:
-                st.caption(val_str or "—")
-
-            st.markdown('<div class="fu-erp-sep"><hr></div>', unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-    return None
-
-
-def _render_tabela_selecao_unica(page: pd.DataFrame, show_cols: list[str]) -> str | None:
-    """Compat: mantém assinatura antiga, mas renderiza lista ERP com botão 👁️."""
-    return _render_lista_erp_com_olho(page, show_cols)
-def _make_stamp(df: pd.DataFrame, col: str = "atualizado_em") -> tuple:
-    if df is None or df.empty:
-        return (0, "empty")
-    mx = None
-    if col in df.columns:
-        mx = pd.to_datetime(df[col], errors="coerce").max()
-    return (len(df), str(mx) if mx is not None else "none")
-
-@st.cache_data(max_entries=256, ttl=120)
-def _prepare_search(stamp: tuple, df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza tipos e cria coluna de busca (cacheada)."""
-    if df is None or df.empty:
-        return df
-
-    out = df.copy()
-
-    cols = []
-    for c in ["nr_oc", "nr_solicitacao", "descricao", "departamento", "fornecedor", "cod_material", "cod_equipamento"]:
-        if c in out.columns:
-            cols.append(out[c].fillna("").astype(str).str.lower())
-
-    if cols:
-        s = cols[0]
-        for x in cols[1:]:
-            s = s + " " + x
-        out["__search__"] = s.str.replace(r"\s+", " ", regex=True).str.strip()
-    else:
-        out["__search__"] = ""
-
-    for dc in ["data_solicitacao", "data_oc", "previsao_entrega", "data_entrega"]:
-        if dc in out.columns:
-            out[dc] = pd.to_datetime(out[dc], errors="coerce")
-
-    for nc in ["qtde_solicitada", "qtde_entregue", "valor_total", "dias_atraso", "qtde_pendente"]:
-        if nc in out.columns:
-            out[nc] = pd.to_numeric(out[nc], errors="coerce")
-
-    return out
-
-def _is_atrasado(df: pd.DataFrame) -> pd.Series:
-    if df is None or df.empty:
-        return pd.Series([], dtype=bool)
-    if "dias_atraso" in df.columns:
-        return pd.to_numeric(df["dias_atraso"], errors="coerce").fillna(0) > 0
-    if "previsao_entrega" in df.columns:
-        hoje = pd.Timestamp.now().normalize()
-        if "status" in df.columns:
-            status_ok = df["status"].fillna("").astype(str) != "Entregue"
-        else:
-            status_ok = True
-        return df["previsao_entrega"].notna() & (df["previsao_entrega"] < hoje) & status_ok
-    return pd.Series([False] * len(df), index=df.index)
-
-def _apply_filters(
-    df: pd.DataFrame,
-    q: str,
-    deptos: list[str],
-    ufs: list[str],
-    status_list: list[str],
-    somente_atrasados: bool,
-    cod_equip: str = "",
-    cod_mat: str = "",
-) -> pd.DataFrame:
-    """Aplica filtros estáveis (multiselect) + busca + atrasados + códigos numéricos."""
-    out = df
-
-    # Navegação vinda do Dashboard (por KPI): restringe a um conjunto de IDs
-    nav_ids = st.session_state.get("consulta_nav_ids")
-    if nav_ids and isinstance(nav_ids, set):
-        try:
-            out = out.loc[out.index.intersection(nav_ids)]
-        except Exception:
-            pass
-
-    if deptos and "departamento" in out.columns:
-        out = out[out["departamento"].isin(deptos)]
-
-    if ufs and "fornecedor_uf" in out.columns:
-        out = out[out["fornecedor_uf"].fillna("").astype(str).str.strip().str.upper().isin([u.strip().upper() for u in ufs])]
-
-    if status_list and "status" in out.columns:
-        out = out[out["status"].isin(status_list)]
-
-    # Código de equipamento (somente números): match exato ou prefixo (tolerante)
-    if cod_equip and "cod_equipamento" in out.columns:
-        ce = str(cod_equip).strip()
-        out = out[out["cod_equipamento"].fillna("").astype(str).str.replace(r"\D", "", regex=True).str.startswith(ce)]
-
-    # Código de material (somente números): match exato ou prefixo (tolerante)
-    if cod_mat and "cod_material" in out.columns:
-        cm = str(cod_mat).strip()
-        out = out[out["cod_material"].fillna("").astype(str).str.replace(r"\D", "", regex=True).str.startswith(cm)]
-
-    if q:
-        qn = q.lower().strip()
-        if "__search__" in out.columns:
-            out = out[out["__search__"].str.contains(qn, na=False)]
-        else:
-            # fallback: busca em colunas texto comuns
-            cols = [c for c in ["descricao", "fornecedor", "nr_oc", "nr_solicitacao", "cod_material", "cod_equipamento"] if c in out.columns]
-            if cols:
-                mask = False
-                for c in cols:
-                    mask = mask | out[c].fillna("").astype(str).str.lower().str.contains(qn)
-                out = out[mask]
-
-    if somente_atrasados:
-        out = out[_is_atrasado(out)]
-
-    # Filtro por janela de vencimento (quando aplicado via KPI)
-    win = st.session_state.get("consulta_due_window")
-    if win in ("vencendo", "risco"):
-        try:
-            entregue = out.get("entregue", pd.Series([False] * len(out))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
-            due = _compute_due_dates(out)
-            hoje = pd.Timestamp.now().normalize()
-            limite = hoje + pd.Timedelta(days=3)
-            flag_atrasado = out.get("atrasado", pd.Series([False] * len(out))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
-            if win == "vencendo":
-                out = out[(~entregue) & (due.notna() & (due >= hoje) & (due <= limite))]
-            else:  # risco
-                out = out[(~entregue) & (
-                    flag_atrasado | (due.notna() & (due < hoje)) |
-                    (due.notna() & (due >= hoje) & (due <= limite))
-                )]
-        except Exception:
-            pass
-
-    return out
-
-def _download_csv(df: pd.DataFrame, filename: str):
-    csv = df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
-    st.download_button("⬇️ CSV", csv, file_name=filename, mime="text/csv", use_container_width=True)
-
-def _download_xlsx(df: pd.DataFrame, filename: str):
-    """Download XLSX without requiring xlsxwriter (fallback to openpyxl)."""
-    output = io.BytesIO()
-    engine = "xlsxwriter"
-    try:
-        __import__("xlsxwriter")
-    except Exception:
-        engine = "openpyxl"
-
-    with pd.ExcelWriter(output, engine=engine) as writer:
-        df.to_excel(writer, index=False, sheet_name="Pedidos")
-
-    st.download_button(
-        "⬇️ XLSX",
-        output.getvalue(),
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-
-def _to_label(row: pd.Series) -> str:
-    nr_oc = str(row.get("nr_oc") or "").strip()
-    nr_sol = str(row.get("nr_solicitacao") or "").strip()
-    dept = str(row.get("departamento") or "").strip()
-    stt = str(row.get("status") or "").strip()
-    desc = str(row.get("descricao") or "").strip().replace("\n", " ")
-    if len(desc) > 70:
-        desc = desc[:70] + "…"
-    return f"OC: {nr_oc or '-'} | SOL: {nr_sol or '-'} | {stt} | {dept} — {desc}"
-
-def _find_pid_by_key(df: pd.DataFrame, key: str) -> str | None:
-    """Localiza um pedido pelo nr_oc ou nr_solicitacao (exato -> parcial)."""
-    if df is None or df.empty or not key:
-        return None
-    k = str(key).strip()
-    if not k:
-        return None
-
-
-def _numeric_autocomplete(label: str, series: pd.Series, key_prefix: str, max_suggestions: int = 30) -> str:
-    """Autocomplete simples para códigos numéricos.
-    - Usuário digita só números (limpamos tudo que não for dígito)
-    - Mostra sugestões (starts/contains)
-    - Retorna valor selecionado (string) ou "".
-    """
-    st.session_state.setdefault(f"{key_prefix}_q", "")
-    st.session_state.setdefault(f"{key_prefix}_sel", "")
-
-    raw = st.text_input(label, key=f"{key_prefix}_q", placeholder="Digite números…")
-    q = re.sub(r"\D+", "", raw or "")
-    if q != (raw or ""):
-        st.session_state[f"{key_prefix}_q"] = q  # normaliza na UI
-
-    # se já selecionou, mantém
-    options = []
-    if series is not None and not series.empty:
-        vals = series.dropna().astype(str)
-        vals = vals[vals.str.fullmatch(r"\d+")]  # só números
-        uniq = sorted(vals.unique().tolist())
-        if q:
-            starts = [v for v in uniq if v.startswith(q)]
-            contains = [v for v in uniq if (q in v and not v.startswith(q))]
-            options = (starts + contains)[:max_suggestions]
-        else:
-            options = uniq[:max_suggestions]
-
-    sel = st.selectbox(
-        "Sugestões",
-        [""] + options,
-        key=f"{key_prefix}_sel",
-        label_visibility="collapsed",
-        help="Selecione um código sugerido (opcional).",
-    )
-
-    return sel or (q if q else "")
-    if "nr_oc" in df.columns:
-        m = df[df["nr_oc"].fillna("").astype(str).str.strip() == k]
-        if not m.empty:
-            return str(m.iloc[0].get("id") or "")
-    if "nr_solicitacao" in df.columns:
-        m = df[df["nr_solicitacao"].fillna("").astype(str).str.strip() == k]
-        if not m.empty:
-            return str(m.iloc[0].get("id") or "")
-
-    if "nr_oc" in df.columns:
-        m = df[df["nr_oc"].fillna("").astype(str).str.contains(k, na=False)]
-        if not m.empty:
-            return str(m.iloc[0].get("id") or "")
-    if "nr_solicitacao" in df.columns:
-        m = df[df["nr_solicitacao"].fillna("").astype(str).str.contains(k, na=False)]
-        if not m.empty:
-            return str(m.iloc[0].get("id") or "")
-
-    return None
-
-
-def _inject_consulta_css():
-    st.markdown(
-        """
+from src.ui.theme import apply_theme
+
+import unicodedata
+st.set_page_config(
+    page_title="Sistema de Follow-Up",
+    layout="wide",
+    page_icon="📊",
+    initial_sidebar_state="collapsed",
+)
+
+apply_theme()
+st.markdown("""
 <style>
-/* Reduz poluição visual e melhora densidade */
-.block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
-h1, h2, h3 { letter-spacing: .2px; }
-[data-testid="stMetric"] { padding: .6rem .75rem; border-radius: 14px; }
-[data-testid="stMetric"] > div { gap: .1rem; }
-div.stButton > button { border-radius: 12px; height: 2.6rem; }
-div[data-testid="stHorizontalBlock"] { align-items: center; }
-/* Fixar colunas principais no Data Editor (ERP-like v2) */
-[data-testid="stDataEditor"] [role="columnheader"],
-[data-testid="stDataEditor"] [role="gridcell"] { white-space: nowrap; }
-[data-testid="stDataEditor"] [role="row"] > [role="gridcell"]:nth-child(1),
-[data-testid="stDataEditor"] [role="row"] > [role="columnheader"]:nth-child(1) { position: sticky; left: 0px; z-index: 6; background: rgba(15,17,20,.98); }
-[data-testid="stDataEditor"] [role="row"] > [role="gridcell"]:nth-child(2),
-[data-testid="stDataEditor"] [role="row"] > [role="columnheader"]:nth-child(2) { position: sticky; left: 68px; z-index: 5; background: rgba(15,17,20,.98); }
-[data-testid="stDataEditor"] [role="row"] > [role="gridcell"]:nth-child(3),
-[data-testid="stDataEditor"] [role="row"] > [role="columnheader"]:nth-child(3) { position: sticky; left: 210px; z-index: 4; background: rgba(15,17,20,.98); }
+/* ===== Layout / spacing (global) ===== */
+.block-container{
+  padding-top: 1.0rem;
+  padding-bottom: 1.0rem;
+  padding-left: 1.0rem;
+  padding-right: 1.0rem;
+  /* evita que o conteúdo “estoure” em telas grandes mas mantém fluido */
+  max-width: 1600px;
+}
 
-[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"],
-[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"] { white-space: nowrap; }
-/* 1ª coluna (Abrir) */
-[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"]:nth-child(1),
-[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"]:nth-child(1) { position: sticky; left: 0; z-index: 5; background: rgba(15,17,20,.98); }
-/* 2ª coluna (Cód. equipamento) */
-[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"]:nth-child(2),
-[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"]:nth-child(2) { position: sticky; left: 70px; z-index: 4; background: rgba(15,17,20,.98); }
-/* 3ª coluna (Descrição) */
-[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"]:nth-child(3),
-[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"]:nth-child(3) { position: sticky; left: 220px; z-index: 3; background: rgba(15,17,20,.98); }
+/* Tipografia um pouco mais confortável em 100% zoom */
+html, body, [class*="css"]  { font-size: 15px; }
 
-.small-muted { opacity: .8; font-size: .9rem; }
+/* Radios/labels mais compactos */
+div[role="radiogroup"] label { font-size: 0.90rem !important; }
+
+/* Dataframes mais “tight” */
+[data-testid="stDataFrame"] { font-size: 0.90rem; }
+
+/* Reduz espaçamento vertical geral */
+[data-testid="stVerticalBlock"] { gap: 0.6rem; }
+
+/* Plotly: melhora leitura sem precisar reduzir zoom */
+.stPlotlyChart, .js-plotly-plot { width: 100% !important; }
+.stPlotlyChart glyph text { font-size: 12px !important; }
+
+/* Em telas menores, reduz padding lateral para sobrar espaço pro gráfico */
+@media (max-width: 1100px){
+  .block-container{ padding-left: .75rem; padding-right: .75rem; max-width: 100%; }
+}
+
+/* ===== Sidebar flex layout (compact mode) ===== */
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.fu-compact-nav{
+  flex: 1 1 auto;
+  justify-content: flex-start;
+}
+.fu-sidebar-footer{
+  margin-top: auto;
+  padding-bottom: 10px;
+}
+
+        
+/* Compact mode: separador mais discreto */
+section[data-testid="stSidebar"] hr{
+  margin: 10px 0 !important;
+  opacity: 0.35;
+}
+
+/* ===== Compact icons: força tamanho uniforme (inclusive container do botão) ===== */
+section[data-testid="stSidebar"] .fu-compact-nav div.stButton{
+  width: 64px !important;
+}
+section[data-testid="stSidebar"] .fu-compact-nav div.stButton > button{
+  width: 64px !important;
+  height: 64px !important;
+  border-radius: 18px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+
+  font-size: 26px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0 !important;
+
+  /* fontes que renderizam glyphs com tamanho consistente */
+  font-family: ui-sans-serif, system-ui, "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols2", "Noto Sans Symbols", sans-serif !important;
+
+  color: rgba(255,255,255,0.92) !important;
+  border: 1px solid rgba(255,255,255,0.10) !important;
+  background: rgba(255,255,255,0.03) !important;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+}
+
+/* Hover vermelho */
+section[data-testid="stSidebar"] .fu-compact-nav div.stButton > button:hover{
+  transform: translateY(-1px);
+  border-color: rgba(239,68,68,0.35) !important;
+  background: rgba(239,68,68,0.10) !important;
+  color: rgba(239,68,68,0.95) !important;
+}
+
+/* Ativo vermelho cheio */
+section[data-testid="stSidebar"] .fu-compact-active div.stButton > button{
+  border-color: rgba(239,68,68,0.55) !important;
+  background: rgba(239,68,68,0.95) !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 24px rgba(239,68,68,0.18) !important;
+}
+section[data-testid="stSidebar"] .fu-compact-active div.stButton > button:hover{
+  transform: translateY(-1px);
+  color: #ffffff !important;
+  background: rgba(239,68,68,0.95) !important;
+}
+
+/* ===== Compact layout: reduz "vazio" visual ===== */
+/* remove padding extra no topo da sidebar quando colapsada */
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
+  padding-top: 4px !important;
+}
+/* menu mais denso */
+.fu-compact-nav{
+  gap: 10px !important;
+  padding-top: 4px !important;
+}
+/* Toggle (hambúrguer/fechar) no mesmo tamanho dos ícones */
+section[data-testid="stSidebar"] .fu-sidebar-toggle div.stButton > button{
+  width: 64px !important;
+  height: 64px !important;
+  border-radius: 18px !important;
+  padding: 0 !important;
+  font-size: 22px !important;
+}
+/* ===== OVERRIDE: Sidebar compacta mais densa (estilo Linear) ===== */
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100vh !important;
+  padding-top: 6px !important;
+}
+
+/* menu compacto: alinhado ao topo e com espaçamento menor */
+section[data-testid="stSidebar"] .fu-compact-nav{
+  flex: 1 1 auto !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  padding: 6px 6px 10px 6px !important;
+}
+
+/* wrapper ativo sem aumentar espaço */
+section[data-testid="stSidebar"] .fu-compact-active{
+  padding: 4px !important;
+  border-radius: 20px !important;
+}
+
+/* Botões (tamanho uniforme) */
+section[data-testid="stSidebar"] .fu-sidebar-toggle div.stButton,
+section[data-testid="stSidebar"] .fu-compact-nav div.stButton{
+  width: 60px !important;
+  margin: 0 !important;
+}
+
+section[data-testid="stSidebar"] .fu-sidebar-toggle div.stButton > button,
+section[data-testid="stSidebar"] .fu-compact-nav div.stButton > button{
+  width: 60px !important;
+  height: 60px !important;
+  border-radius: 18px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+
+  font-size: 25px !important;
+  font-weight: 800 !important;
+
+  font-family: ui-sans-serif, system-ui, "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols2", "Noto Sans Symbols", sans-serif !important;
+}
+
+/* Hover e ativo */
+section[data-testid="stSidebar"] .fu-compact-nav div.stButton > button:hover{
+  border-color: rgba(239,68,68,0.35) !important;
+  background: rgba(239,68,68,0.10) !important;
+  color: rgba(239,68,68,0.95) !important;
+}
+section[data-testid="stSidebar"] .fu-compact-active div.stButton > button{
+  border-color: rgba(239,68,68,0.55) !important;
+  background: rgba(239,68,68,0.95) !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 24px rgba(239,68,68,0.18) !important;
+}
+
+/* Footer no rodapé e mais compacto */
+section[data-testid="stSidebar"] .fu-sidebar-footer{
+  margin-top: auto !important;
+  padding: 8px 0 10px 0 !important;
+}
+section[data-testid="stSidebar"] hr{
+  margin: 10px 0 !important;
+  opacity: 0.22 !important;
+}
 </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
+""", unsafe_allow_html=True)
 
-def exibir_consulta_pedidos(_supabase):
-    # Refresh vindo do header global (se existir)
-    if st.session_state.pop("_consulta_force_refresh", False):
-        _clear_cached_pedidos(st.session_state.get("tenant_id"))
+import importlib
 
-    if carregar_pedidos is None:
-        st.error("Função 'carregar_pedidos' não encontrada. Verifique o import em src.repositories.pedidos.")
-        return
-
-    _inject_consulta_css()
-
-    # Topbar (mais limpa)
-    topL, topR = st.columns([2.2, 1.3])
-    with topL:
-        st.title("Consultar Pedidos")
-
-        # Estilo (lista ERP): pills, hover suave, compacto, fade-in
-        st.markdown("""
-        <style>
-        @keyframes fuFadeIn { from {opacity: 0; transform: translateY(2px);} to {opacity: 1; transform: translateY(0);} }
-        section.main > div.block-container { animation: fuFadeIn .15s ease-out; }
-
-        .st-pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600;
-                  border: 1px solid rgba(255,255,255,.10); }
-        .st-pill-green { background: rgba(46, 204, 113, .18); color: rgba(46, 204, 113, 1); }
-        .st-pill-yellow{ background: rgba(241, 196, 15, .18); color: rgba(241, 196, 15, 1); }
-        .st-pill-red   { background: rgba(231, 76, 60, .18); color: rgba(231, 76, 60, 1); }
-        .st-pill-blue  { background: rgba(52, 152, 219, .18); color: rgba(52, 152, 219, 1); }
-        .st-pill-orange{ background: rgba(230, 126, 34, .18); color: rgba(230, 126, 34, 1); }
-        .st-pill-neutral{ background: rgba(255,255,255,.07); color: rgba(255,255,255,.80); }
-
-        /* Modo compacto */
-        [data-testid="stVerticalBlock"] .stCaption { margin-top: 0.15rem; margin-bottom: 0.15rem; }
-        [data-testid="stButton"] button { padding-top: .35rem; padding-bottom: .35rem; }
-
-        /* Hover highlight (no botão da descrição, que é a "linha clicável") */
-        [data-testid="stButton"] button:hover { filter: brightness(1.05); }
-        </style>
-        """, unsafe_allow_html=True)
-    st.caption("Busque, filtre e aja rápido sem poluir a tela.")
-    st.caption("💡 Dica: os filtros ficam no menu lateral (🎛️ Filtros).")
-    # Botões de ação ficam no header global do app (evita duplicação nesta página)
-
-    tenant_id = st.session_state.get("tenant_id")
-    df_raw = _get_cached_pedidos(_supabase, tenant_id)
-    if df_raw is None or df_raw.empty:
-        ux.info("📭 Nenhum pedido cadastrado.")
-        return
-
-    df = _prepare_search(_make_stamp(df_raw), df_raw)
-    # Status disponíveis no dataset (para filtro rápido executivo)
+def _call_page(mod_name: str, func_name: str, *args, **kwargs):
+    """Importa a página sob demanda (evita import circular e mantém o app subindo)."""
     try:
-        if "status" in df.columns:
-            st.session_state["consulta_status_opts"] = sorted(df["status"].dropna().astype(str).unique().tolist())
-        else:
-            st.session_state.setdefault("consulta_status_opts", [])
+        mod = importlib.import_module(mod_name)
+        fn = getattr(mod, func_name)
+    except Exception as e:
+        st.error(f"Erro ao importar {mod_name}.{func_name}: {e}")
+        st.stop()
+    return fn(*args, **kwargs)
+
+# 🔑 Auth callback (robusto para diferentes estruturas de projeto)
+try:
+    # Se auth_flows.py estiver na raiz do projeto
+    from auth_flows import handle_auth_callback  # type: ignore
+except Exception:
+    try:
+        # Se estiver dentro do pacote src (ajuste comum em apps modularizados)
+        from src.auth_flows import handle_auth_callback  # type: ignore
     except Exception:
-        st.session_state.setdefault("consulta_status_opts", [])
-
-
-    # -------------------- Estado padrão (filtros + seleção)
-    st.session_state.setdefault("c_q", "")
-    st.session_state.setdefault("c_deptos", [])
-    st.session_state.setdefault("c_uf", [])
-    st.session_state.setdefault("c_status_list", [])
-    st.session_state.setdefault("c_cod_equip", "")
-    st.session_state.setdefault("c_cod_mat", "")
-    st.session_state.setdefault("c_atraso", False)
-    st.session_state.setdefault("c_pp", 50)
-    st.session_state.setdefault("c_pag", 1)
-    st.session_state.setdefault("consulta_selected_pid", None)
-    st.session_state.setdefault("consulta_auto_opened_pid", None)
-    st.session_state.setdefault("consulta_selected_label", "")
-    st.session_state.setdefault("go_key", "")
-
-    # -------------------- Navegação por KPIs (Dashboard -> Consulta)
-    # Usa uma chave simples e remove após aplicar, para não "grudar".
-    nav_mode = st.session_state.pop("consulta_nav_mode", None)
-    if nav_mode:
-        nav_mode = str(nav_mode).strip().lower()
-        st.session_state["c_pag"] = 1
-        # limpa filtros que normalmente atrapalham uma navegação rápida
-        st.session_state["c_status_list"] = []
-        st.session_state["c_deptos"] = st.session_state.get("c_deptos", []) or []
-        st.session_state["c_uf"] = st.session_state.get("c_uf", []) or []
-        st.session_state["c_atraso"] = False
-
-        # aplica por regra equivalente ao Dashboard
-        base = df.copy()
-        entregue = base.get("entregue", pd.Series([False] * len(base))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
-        due = _compute_due_dates(base)
-        hoje = pd.Timestamp.now().normalize()
-        limite = hoje + pd.Timedelta(days=3)
-        flag_atrasado = base.get("atrasado", pd.Series([False] * len(base))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
-
-        if nav_mode == "pendentes":
-            mask = ~entregue
-        elif nav_mode == "atrasados":
-            mask = (~entregue) & (flag_atrasado | (due.notna() & (due < hoje)))
-            st.session_state["c_atraso"] = True
-        elif nav_mode == "vencendo":
-            mask = (~entregue) & (due.notna() & (due >= hoje) & (due <= limite))
-            st.session_state["consulta_due_window"] = "vencendo"
-        elif nav_mode == "risco":
-            mask = (~entregue) & (
-                flag_atrasado | (due.notna() & (due < hoje)) |
-                (due.notna() & (due >= hoje) & (due <= limite))
-            )
-            st.session_state["consulta_due_window"] = "risco"
-        else:
-            mask = pd.Series([True] * len(base), index=base.index)
-
-        # guarda um filtro rápido por IDs para ser aplicado no _apply_filters
         try:
-            st.session_state["consulta_nav_ids"] = set(base.loc[mask].index.tolist())
+            from src.core.auth_flows import handle_auth_callback  # type: ignore
         except Exception:
-            st.session_state["consulta_nav_ids"] = None
-    # -------------------- Presets/Atalhos (robusto, evita StreamlitAPIException)
-    # Regras:
-    # - Callback (on_change/on_click) roda antes de renderizar widgets -> seguro para setar chaves
-    # - Presets respeitam status disponíveis no dataset (quando aplicável)
-    def _apply_preset(preset: str, status_opts: list[str] | None = None):
-        preset = (preset or "—").strip()
+            # Fallback seguro: não quebra o app caso o módulo não exista
+            def handle_auth_callback(*_args, **_kwargs):  # type: ignore
+                return
 
-        desired_by_preset = {
-            "Sem OC": ["Sem OC"],
-            "Transporte": ["Em Transporte"],
-            "Em Transporte": ["Em Transporte"],
-            "Entregues": ["Entregue"],
+from src.core.auth import verificar_autenticacao, exibir_login, fazer_logout
+
+import json
+import base64
+import textwrap
+import streamlit.components.v1 as components
+
+
+from urllib.parse import urlencode
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+import src.services.sistema_alertas as sa
+import src.services.backup_auditoria as ba
+from src.repositories.fornecedores import carregar_fornecedores
+from src.core.config import configure_page  # noqa: F401
+from src.core.db import init_supabase_admin, init_supabase_anon, get_supabase_user_client
+from src.repositories.pedidos import carregar_pedidos
+from src.utils.formatting import formatar_moeda_br
+from src.ui.dashboard import exibir_dashboard
+from src.ui.mapa import exibir_mapa
+from src.ui.consulta import exibir_consulta_pedidos
+from src.ui.ficha_material_page import exibir_ficha_material
+from src.ui.gestao_usuarios import exibir_gestao_usuarios
+from src.ui.admin_saas import exibir_admin_saas
+from src.ui.landing_public import render_landing
+from src.ui.home import exibir_home
+from src.core.superadmin import is_superadmin
+from src.ui.relatorios_whatsapp import render_relatorios_whatsapp
+from src.ui.relatorios_gerenciais import render_relatorios_gerenciais
+from src.ui.theme import apply_theme as apply_ui_theme
+from src.services import observabilidade as obs
+
+
+# --- Supabase clients (anon/admin) ---
+# Necessários para login (anon) e operações administrativas (admin).
+# Mantemos como singletons no módulo para uso em callbacks/funções auxiliares.
+try:
+    supabase_anon = init_supabase_anon()
+except Exception:
+    supabase_anon = None
+
+try:
+    supabase_admin = init_supabase_admin()
+except Exception:
+    supabase_admin = None
+
+# Disponibiliza admin client para observabilidade/perf (best-effort)
+try:
+    st.session_state["_supabase_admin"] = supabase_admin
+except Exception:
+    pass
+
+# Observabilidade: logger rotativo (best-effort)
+try:
+    obs.setup_logging()
+except Exception:
+    pass
+
+if "fu_started_at" not in st.session_state:
+    try:
+        st.session_state.fu_started_at = datetime.now().isoformat()
+    except Exception:
+        st.session_state.fu_started_at = ""
+
+
+
+
+
+
+# --- Sidebar fixa (sem modo colapsado) ---
+if "fu_sidebar_hidden" not in st.session_state:
+    st.session_state.fu_sidebar_hidden = False
+else:
+    st.session_state.fu_sidebar_hidden = False
+
+def _fu_inject_global_css(sidebar_hidden: bool) -> None:
+    """Injeta CSS global e regras de sidebar colapsada."""
+    collapsed_css = (
+        textwrap.dedent(
+            """
+            /* Sidebar colapsada (modo compacto) */
+            section[data-testid="stSidebar"]{
+              width: 86px !important;
+              min-width: 86px !important;
+              overflow: hidden !important;
+              contain: layout paint style;
+              will-change: width;
+              backface-visibility: hidden;
+              transform: translateZ(0);
+            }
+            section[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
+              padding-top: 10px !important;
+              padding-left: 6px !important;
+              padding-right: 6px !important;
+            }
+            """
+        ).strip()
+    ) if sidebar_hidden else ""
+
+    style = textwrap.dedent(
+        """
+        <style>
+        /* ===== Sidebar toggle (hamburger) ===== */
+        .fu-sidebar-toggle{ display:flex; justify-content:flex-start; margin: 4px 0 10px 0; }
+        .fu-sidebar-toggle .stButton > button{
+          width: 64px !important;
+          height: 64px !important;
+          border-radius: 18px !important;
+          padding: 0 !important;
+          display:flex !important;
+          align-items:center !important;
+          justify-content:center !important;
+          font-size: 22px !important;
+          line-height: 1 !important;
+          border: 1px solid rgba(255,255,255,0.12) !important;
+          background: rgba(255,255,255,0.05) !important;
+          transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease !important;
+        }
+        .fu-sidebar-toggle .stButton > button:hover{
+          transform: translateY(-1px);
+          border-color: rgba(239,68,68,0.30) !important;
+          background: rgba(239,68,68,0.10) !important;
         }
 
-        st.session_state["c_pag"] = 1
+        /* ===== Compact sidebar container ===== */
+        .fu-compact-nav{
+          display:flex;
+          flex-direction:column;
+          gap: 12px;
+          padding: 6px 6px 10px 6px;
+          align-items:center;
+        }
+        .fu-compact-row{
+          width: 100%;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+        }
 
-        if preset in ("—", "", "Todos"):
-            # "Todos" volta ao estado neutro
-            if preset == "Todos":
-                st.session_state["c_atraso"] = False
-                st.session_state["c_status_list"] = []
-            return
+        /* ===== Compact sidebar (glyph buttons): branco / hover vermelho / ativo vermelho ===== */
+        .fu-compact-nav .stButton > button{
+          width: 64px !important;
+          height: 64px !important;
+          border-radius: 18px !important;
+          padding: 0 !important;
+          display:flex !important;
+          align-items:center !important;
+          justify-content:center !important;
+          font-size: 26px !important;
+          line-height: 1 !important;
+          color: rgba(255,255,255,0.92) !important;
+          border: 1px solid rgba(255,255,255,0.10) !important;
+          background: rgba(255,255,255,0.03) !important;
+          transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+        }
+        .fu-compact-nav .stButton > button:hover{
+          transform: translateY(-1px);
+          border-color: rgba(239,68,68,0.35) !important;
+          background: rgba(239,68,68,0.10) !important;
+          color: rgba(239,68,68,0.95) !important;
+        }
+        .fu-compact-active .stButton > button{
+          border-color: rgba(239,68,68,0.55) !important;
+          background: rgba(239,68,68,0.95) !important;
+          color: #ffffff !important;
+          box-shadow: 0 12px 24px rgba(239,68,68,0.18) !important;
+        }
+        .fu-compact-active .stButton > button:hover{
+          transform: translateY(-1px);
+          color: #ffffff !important;
+          background: rgba(239,68,68,0.95) !important;
+        }
 
-        if preset == "Limpar":
-            st.session_state["c_atraso"] = False
-            st.session_state["c_status_list"] = []
-            return
+        /* Sidebar fixa (Streamlit 1.37 / Cloud): trava largura e remove resize */
+        section[data-testid="stSidebar"]{
+          width: 300px !important;
+          min-width: 300px !important;
+          max-width: 300px !important;
+          flex: 0 0 300px !important;
+          overflow: hidden;
+          contain: layout paint style;
+          will-change: auto;
+          backface-visibility: hidden;
+          transform: translateZ(0);
+        }
+        section[data-testid="stSidebar"] > div{
+          width: 300px !important;
+          min-width: 300px !important;
+          max-width: 300px !important;
+        }
 
-        if preset == "Atrasados":
-            st.session_state["c_atraso"] = True
-            st.session_state["c_status_list"] = []
-            return
+        /* Remove completamente o resizer/handle */
+        div[data-testid="stSidebarResizeHandle"],
+        div[data-testid="stSidebarResizer"]{
+          display: none !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+          width: 0 !important;
+          max-width: 0 !important;
+        }
 
-        wanted = desired_by_preset.get(preset, [])
-        if status_opts:
-            wanted = [s for s in wanted if s in status_opts]
-        st.session_state["c_status_list"] = wanted
-        st.session_state["c_atraso"] = False
-
-    def _apply_preset_from_selectbox():
-        preset = st.session_state.get("consulta_preset") or "—"
-        status_opts_atual = st.session_state.get("consulta_status_opts") or None
-        _apply_preset(preset, status_opts=status_opts_atual)
-
-# =========================
-    # -------------------- Tabs para reduzir poluição
-    st.session_state.setdefault("consulta_tab", "Lista")
-    st.session_state.setdefault("consulta_tab_target", None)
-
-    # Se alguma ação pediu troca de aba (ex.: clique em linha), aplica ANTES de criar o widget st.radio
-    target_tab = st.session_state.get("consulta_tab_target")
-    if target_tab:
-        st.session_state["consulta_tab"] = target_tab
-        st.session_state["consulta_tab_target"] = None
-
-
-    # Top controls (executivo): Navegação + Filtro rápido na mesma linha
-    # =========================
-    st.markdown(
-        '''
-        <style>
-          /* Top controls: duas "segment bars" minimalistas (vermelho) */
-          .fu-top-controls{ margin: 6px 0 6px 0; }
-          .fu-top-controls .fu-segbar{ display:flex; align-items:center; }
-          .fu-top-controls .fu-segbar [role="radiogroup"]{
-            display:inline-flex !important;
-            gap: 0 !important;
-            padding: 4px !important;
-            border-radius: 14px !important;
-            border: 1px solid rgba(255,255,255,0.10) !important;
-            background: rgba(255,255,255,0.03) !important;
-            overflow: hidden !important;
+        /* Mobile: sidebar overlay ocupa a tela */
+        @media (max-width: 900px){
+          section[data-testid="stSidebar"]{
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            flex: 0 0 100% !important;
           }
-          .fu-top-controls .fu-segbar [role="radiogroup"] > label{ margin:0 !important; }
-          .fu-top-controls .fu-segbar [role="radiogroup"] label{
-            padding: 6px 12px !important;
-            border-radius: 10px !important;
-            border: 1px solid transparent !important;
-            background: transparent !important;
-            transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
-            user-select:none;
-            white-space: nowrap;
+          section[data-testid="stSidebar"] > div{
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
           }
-          .fu-top-controls .fu-segbar [role="radiogroup"] label:hover{
-            border-color: rgba(239,68,68,0.22) !important;
-            background: rgba(239,68,68,0.08) !important;
-          }
-          .fu-top-controls .fu-segbar [role="radiogroup"] input:checked + div{
-            border-radius: 10px !important;
-            background: rgba(239,68,68,0.16) !important;
-            box-shadow: inset 0 0 0 1px rgba(239,68,68,0.35) !important;
-          }
-          .fu-top-controls .fu-segbar [role="radiogroup"] label div{
-            font-weight: 850 !important;
-            font-size: 0.86rem !important;
-            padding: 0 !important;
-          }
-          /* Esconde bolinha do radio (fica estilo tabs) */
-          .fu-top-controls .fu-segbar [role="radiogroup"] label span:first-child{ display:none !important; }
+        }
 
-          /* Alinhamento e responsividade */
-          .fu-top-controls .fu-top-nav{ justify-content:flex-start; }
-          .fu-top-controls .fu-top-quick{ justify-content:flex-end; }
-          @media (max-width: 980px){
-            .fu-top-controls .fu-top-nav{ justify-content:center; margin-bottom: 6px; }
-            .fu-top-controls .fu-top-quick{ justify-content:center; }
-          }
+        @media (prefers-reduced-motion: reduce){
+          section[data-testid="stSidebar"]{ transition: none !important; }
+        }
+
+        /* Conta: botões full-width e alinhados */
+        section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton > button{
+          width: 100% !important;
+          height: 44px !important;
+          border-radius: 12px !important;
+          padding: 0 14px !important;
+          justify-content: flex-start !important;
+          font-size: 0.95rem !important;
+        }
+
+        /* ====== COLLAPSED CSS INJECT ====== */
+        __FU_COLLAPSED_CSS__
         </style>
-        ''',
+        """
+    ).replace("__FU_COLLAPSED_CSS__", collapsed_css)
+
+    st.markdown(style, unsafe_allow_html=True)
+
+def _jwt_claim_exp(token: str):
+    """Extrai 'exp' (epoch seconds) do JWT sem validar assinatura."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        # base64url padding
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
+        return payload.get("exp")
+    except Exception:
+        return None
+
+
+def _jwt_expirou() -> bool:
+        exp = st.session_state.get("auth_expires_at")
+        if not exp:
+            token = st.session_state.get("auth_access_token")
+            if token:
+                exp = _jwt_claim_exp(token)
+                # guarda pra próximas execuções
+                if exp:
+                    st.session_state.auth_expires_at = exp
+            if not exp:
+                # sem exp conhecido, tenta refresh preventivo
+                return True
+        try:
+            return datetime.now(timezone.utc).timestamp() >= float(exp) - 30
+        except Exception:
+            return False
+
+
+def _refresh_session() -> bool:
+    """Tenta renovar a sessão usando refresh_token. Retorna True se renovou."""
+    rt = st.session_state.get("auth_refresh_token")
+    if not rt:
+        return False
+    try:
+        res = supabase_anon.auth.refresh_session(rt)
+        session = res.session
+        st.session_state.auth_access_token = session.access_token
+        st.session_state.auth_refresh_token = session.refresh_token
+        st.session_state.auth_expires_at = session.expires_at
+        return True
+    except Exception:
+        return False
+def _safe_len(x) -> int:
+    try:
+        return int(len(x or []))
+    except Exception:
+        return 0
+
+
+def _industrial_sidebar_css() -> None:
+    """Tema corporativo industrial + barra lateral laranja no item ativo + animações suaves."""
+    st.markdown(
+        textwrap.dedent(r"""
+        <style>
+            :root {
+                --fu-bg: #0b1220;
+                --fu-card: rgba(255,255,255,0.06);
+                --fu-border: rgba(255,255,255,0.10);
+                --fu-text: rgba(255,255,255,0.92);
+                --fu-muted: rgba(255,255,255,0.72);
+                --fu-accent: #ef4444;      /* red */
+                --fu-accent2: #dc2626;     /* deep red */
+            }
+
+            section[data-testid="stSidebar"] {
+                background:
+                    radial-gradient(1100px 420px at 15% 0%, rgba(239,68,68,0.10), transparent 55%),
+                    radial-gradient(900px 380px at 80% 18%, rgba(59,130,246,0.10), transparent 55%),
+                    var(--fu-bg);
+            }
+
+            section[data-testid="stSidebar"] > div { padding-top: 0.8rem; }
+
+            /* ===== FIX (Streamlit >=1.37): ícones do expander como texto (arrow_*) ===== */
+            section[data-testid="stSidebar"] [data-testid="stExpanderToggleIcon"]{
+                display: none !important;
+            }
+            section[data-testid="stSidebar"] details > summary{
+                padding-left: 6px !important;
+            }
+
+
+            .fu-card {
+                background: var(--fu-card);
+                border: 1px solid var(--fu-border);
+                border-radius: 14px;
+                padding: 12px 12px;
+                margin-bottom: 10px;
+                color: var(--fu-text);
+                box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+            }
+
+            .fu-user-label { font-size: 12px; opacity: .8; margin: 0 0 4px 0; }
+            .fu-user-name { font-size: 16px; font-weight: 800; margin: 0; letter-spacing: .2px; }
+            .fu-user-role { font-size: 12px; opacity: .75; margin: 4px 0 0 0; }
+
+            /* Mini KPIs (grid 2x2, mobile friendly) */
+            .fu-kpi-grid{
+                display:grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap:8px;
+                margin: 8px 0 12px 0;
+            }
+            @media (max-width: 420px){
+                .fu-kpi-grid{ grid-template-columns: 1fr; }
+            }
+            .fu-kpi{
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 12px;
+                padding: 10px 10px;
+                min-height: 64px;
+                display:flex;
+                flex-direction:column;
+                justify-content:center;
+            }
+            .fu-kpi-title{ font-size: 11px; opacity: .80; margin: 0 0 2px 0; line-height: 1.05; }
+            .fu-kpi-value{ font-size: 18px; font-weight: 900; margin: 0; line-height: 1.05; }
+
+            /* KPI clicável (botões com cara de card) */
+            .fu-kpi-click .stButton button{
+                background: rgba(255,255,255,0.04) !important;
+                border: 1px solid rgba(255,255,255,0.10) !important;
+                border-radius: 14px !important;
+                padding: 12px 10px !important;
+                min-height: 78px !important;
+                font-weight: 900 !important;
+                text-align: center !important;
+                white-space: pre-line !important; /* respeita \n do label */
+                line-height: 1.05 !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+            }
+
+            /* Força todos os KPIs da sidebar a terem exatamente a mesma altura */
+            .fu-kpi-click .stButton{ height: 88px !important; }
+            .fu-kpi-click .stButton > button{ height: 100% !important; }
+            .fu-kpi-click .stButton button:hover{
+                border-color: rgba(239,68,68,0.30) !important;
+                background: rgba(255,255,255,0.06) !important;
+                transform: translateY(-1px);
+            }
+
+            /* KPIs clicáveis no corpo (Dashboard etc.) */
+            .fu-kpi-main-click .stButton{ height: 92px !important; }
+            .fu-kpi-main-click .stButton > button{
+                height: 100% !important;
+                background: rgba(255,255,255,0.035) !important;
+                border: 1px solid rgba(255,255,255,0.10) !important;
+                border-radius: 16px !important;
+                padding: 14px 12px !important;
+                font-weight: 900 !important;
+                text-align: left !important;
+                white-space: pre-line !important;
+                line-height: 1.05 !important;
+                display:flex !important;
+                align-items:center !important;
+                justify-content:flex-start !important;
+                gap: 10px !important;
+            }
+            .fu-kpi-main-click .stButton > button:hover{
+                border-color: rgba(239,68,68,0.30) !important;
+                background: rgba(255,255,255,0.055) !important;
+                transform: translateY(-1px);
+            }
+            .fu-kpi-main-click .stButton > button:active{ transform: translateY(0px); }
+
+/* KPIs responsivos (evita “prensar” em mobile) */
+@media (max-width: 520px){
+    .fu-kpi-row{ flex-wrap: wrap; }
+    .fu-kpi{ flex: 1 1 calc(50% - 8px); }
+    .fu-kpi:last-child{ flex: 1 1 100%; }
+    .fu-kpi-value{ font-size: 20px; }
+}
+@media (max-width: 380px){
+    .fu-kpi{ flex: 1 1 100%; }
+}
+
+            /* Menu radio */
+            div[role="radiogroup"] label {
+                padding: 10px 12px;
+                border-radius: 12px;
+                margin-bottom: 6px;
+                transition: transform .12s ease, background-color .12s ease, border .12s ease;
+                border: 1px solid transparent;
+            }
+            div[role="radiogroup"] label:hover {
+                background-color: rgba(255,255,255,0.06);
+                transform: translateX(2px);
+                border: 1px solid rgba(239,68,68,0.14);
+            }
+
+            /* Item ativo: barra laranja + glow SaaS */
+            div[role="radiogroup"] input:checked + div {
+                background: linear-gradient(135deg, rgba(239,68,68,0.18), rgba(255,255,255,0.04));
+                border-radius: 12px;
+                box-shadow:
+                  inset 4px 0 0 var(--fu-accent),
+                  0 0 0 1px rgba(239,68,68,0.16),
+                  0 10px 26px rgba(239,68,68,0.10);
+            }
+
+            /* Expanders */
+            details {
+                background: rgba(255,255,255,0.02);
+                border: 1px solid rgba(255,255,255,0.06);
+                border-radius: 14px;
+                padding: 6px 10px;
+                margin-bottom: 10px;
+            }
+            summary { cursor: pointer; font-weight: 900; color: var(--fu-text); }
+
+            /* Destaque do grupo ativo (wrapper dentro do expander) */
+            .fu-expander-active {
+                border: 1px solid rgba(239,68,68,0.22);
+                background: linear-gradient(135deg, rgba(239,68,68,0.06), rgba(255,255,255,0.02));
+                border-radius: 14px;
+                padding: 6px 6px 2px 6px;
+                margin-top: 6px;
+            }
+
+            /* Botões */
+            button[kind="secondary"] {
+                background-color: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.12);
+                transition: transform .08s ease;
+            }
+            button[kind="secondary"]:hover { transform: translateY(-1px); }
+
+            .fu-bar {
+                height: 3px;
+                border-radius: 999px;
+                background: linear-gradient(90deg, var(--fu-accent), rgba(251,146,60,0.0));
+                margin: 10px 0 8px 0;
+                opacity: .9;
+            }
+        
+            
+
+/* Chips (filtros ativos) */
+.fu-chips{ display:flex; flex-wrap:wrap; gap:8px; margin: 6px 0 10px 0; }
+.fu-chip{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:6px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.86);
+    font-size: 12px;
+    line-height: 1.1;
+    white-space: nowrap;
+}
+.fu-chip--danger{ border-color: rgba(239,68,68,0.35); background: rgba(239,68,68,0.10); }/* ===== Menu Operações / Gestão (botões SaaS) ===== */
+            .fu-nav details{
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.07);
+                border-radius: 16px;
+                padding: 8px 10px;
+                margin-bottom: 10px;
+            }
+            .fu-nav summary{
+                font-weight: 900;
+                font-size: 0.95rem;
+                opacity: .92;
+            }
+            .fu-nav .fu-nav-group{
+                margin-top: 8px;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .fu-nav .fu-nav-row{
+                display:flex;
+                align-items:center;
+                gap: 10px;
+            }
+            .fu-nav .fu-nav-dot{
+                width: 6px;
+                height: 10px;
+                border-radius: 999px;
+                background: rgba(255,255,255,0.12);
+            }
+            .fu-nav .fu-nav-dot--active{
+                height: 22px;
+                background: rgba(239,68,68,0.95);
+                box-shadow: 0 0 0 1px rgba(239,68,68,0.18);
+            }
+
+            /* Botões do menu (somente dentro da fu-nav) */
+            .fu-nav .stButton > button{
+                width: 100% !important;
+                height: 44px !important;
+                border-radius: 14px !important;
+                padding: 0 14px !important;
+                justify-content: flex-start !important;
+                font-weight: 800 !important;
+                border: 1px solid rgba(255,255,255,0.10) !important;
+                background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)) !important;
+                transition: transform 90ms ease, border-color 120ms ease, background 120ms ease !important;
+            }
+            .fu-nav .stButton > button:hover{
+    transform: translateY(-1px);
+    border-color: rgba(239,68,68,0.22) !important;
+    background: rgba(239,68,68,0.06) !important;
+}
+
+            
+            /* Item (alinhado) */
+            .fu-nav .fu-nav-item{
+                position: relative;
+            }
+            .fu-nav .fu-nav-item .stButton > button{
+                /* garante alinhamento perfeito sem coluna de “dot” */
+                padding-left: 16px !important;
+            }
+            .fu-nav .fu-nav-item--active{
+                border-radius: 16px;
+                padding: 4px;
+                background: rgba(0,0,0,0);
+                border: 1px solid rgba(239,68,68,0.14);
+                box-shadow: 0 10px 22px rgba(239,68,68,0.08);
+            }
+            .fu-nav .fu-nav-item--active::before{
+                content: "";
+                position: absolute;
+                left: 8px;
+                top: 16px;
+                width: 4px;
+                height: 22px;
+                border-radius: 999px;
+                background: rgba(239,68,68,0.95);
+                box-shadow: 0 0 0 1px rgba(239,68,68,0.18);
+            }
+
+
+/* Wrapper do ativo — Minimalista (Notion) */
+            .fu-nav .fu-nav-active{
+                position: relative;
+                border-radius: 14px;
+                padding: 4px;
+                background: rgba(0,0,0,0);
+                border: 1px solid rgba(239,68,68,0.14);
+                box-shadow: none;
+                transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+            }
+            .fu-nav .fu-nav-active::before{
+                content: "";
+                position: absolute;
+                left: -6px;
+                top: 10px;
+                width: 3px;
+                height: calc(100% - 20px);
+                border-radius: 999px;
+                background: linear-gradient(180deg, rgba(239,68,68,1), rgba(220,38,38,1));
+                transition: height 140ms ease, top 140ms ease, opacity 140ms ease;
+            }
+            .fu-nav .fu-nav-active .stButton > button{
+                font-weight: 800 !important;
+            }
+
+/* Nav: otimização mobile (mais espaço e menos travamento) */
+@media (max-width: 520px){
+    .fu-nav .fu-nav-dot{ display:none; }
+    .fu-nav .fu-nav-row{ gap: 0; }
+    .fu-nav .stButton > button{
+        height: 48px !important;
+        border-radius: 16px !important;
+        padding: 0 12px !important;
+        font-size: 0.98rem !important;
+    }
+}
+
+/* Conta: botões com melhor toque */
+.fu-account .stButton > button{
+    width: 100% !important;
+    height: 46px !important;
+    border-radius: 16px !important;
+    padding: 0 14px !important;
+    justify-content: flex-start !important;
+    font-weight: 850 !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    background: rgba(255,255,255,0.04) !important;
+    transition: transform 90ms ease, border-color 120ms ease, background 120ms ease !important;
+}
+.fu-account .stButton > button:hover{
+    transform: translateY(-1px);
+    border-color: rgba(59,130,246,0.25) !important;
+    background: rgba(255,255,255,0.06) !important;
+}
+
+
+/* ===== Menu scroll interno + headers fixos ===== */
+.fu-menu-scroll{
+    max-height: calc(100vh - 430px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+}
+@media (max-width: 900px){
+    .fu-menu-scroll{ max-height: calc(100vh - 380px); }
+}
+.fu-menu-scroll::-webkit-scrollbar{ width: 8px; }
+.fu-menu-scroll::-webkit-scrollbar-thumb{
+    background: rgba(255,255,255,0.10);
+    border-radius: 999px;
+}
+.fu-group{
+    margin: 10px 0 12px 0;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02);
+    border-radius: 16px;
+    overflow: hidden;
+}
+.fu-group--active{
+    border-color: rgba(239,68,68,0.18);
+    box-shadow: 0 12px 24px rgba(239,68,68,0.08);
+}
+.fu-group-h{
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    padding: 10px 12px;
+    font-weight: 900;
+    font-size: 0.92rem;
+    letter-spacing: .2px;
+    background: rgba(11,18,32,0.88);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.fu-group-b{
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+
+
+/* ===== Identidade Vermelha global (minimalista) ===== */
+button[kind="primary"]{
+    background: rgba(239,68,68,0.92) !important;
+    border: 1px solid rgba(239,68,68,0.55) !important;
+    color: #fff !important;
+    box-shadow: none !important;
+}
+button[kind="primary"]:hover{
+    background: rgba(239,68,68,1) !important;
+    border-color: rgba(239,68,68,0.75) !important;
+}
+button[kind="secondary"]:hover{
+    border-color: rgba(239,68,68,0.25) !important;
+    background: rgba(239,68,68,0.05) !important;
+}
+/* Links */
+a, a:visited{ color: rgba(239,68,68,0.82); }
+a:hover{ color: rgba(239,68,68,1); }
+</style>
+        """),
         unsafe_allow_html=True,
     )
 
-    nav_col, quick_col = st.columns([1.3, 2.0])
-    with nav_col:
-        st.markdown('<div class="fu-top-controls"><div class="fu-segbar fu-top-nav">', unsafe_allow_html=True)
-        tab_choice = st.radio(
-            "",
-            ["Lista", "Visão", "Ações"],
-            horizontal=True,
-            key="consulta_tab",
-            label_visibility="collapsed",
-        )
-        st.markdown("</div></div>", unsafe_allow_html=True)
+def _label_alertas(total_alertas: int) -> str:
+    """Label visual de Alertas (sem emoji) com contagem quando houver."""
+    try:
+        n = int(total_alertas or 0)
+    except Exception:
+        n = 0
+    if n > 0:
+        return f"Alertas ({n})"
+    return "Alertas"
 
-    with quick_col:
-        # Segment control (filtro rápido) — usa status disponíveis no dataset
-        status_opts_atual = st.session_state.get("consulta_status_opts") or []
-
-        quick_opts = ["Todos", "Atrasados"]
-        if "Sem OC" in status_opts_atual:
-            quick_opts.append("Sem OC")
-        if "Em Transporte" in status_opts_atual:
-            quick_opts.append("Transporte")
-        if "Entregue" in status_opts_atual:
-            quick_opts.append("Entregues")
-
-        st.session_state.setdefault("consulta_quick", "Todos")
-        if st.session_state.get("consulta_quick") not in quick_opts:
-            st.session_state["consulta_quick"] = "Todos"
-
-        def _apply_quick_from_control():
-            val = st.session_state.get("consulta_quick") or "Todos"
-            _apply_preset(val, status_opts=status_opts_atual)
-
-        st.markdown('<div class="fu-top-controls"><div class="fu-segbar fu-top-quick">', unsafe_allow_html=True)
-        st.radio(
-            "",
-            options=quick_opts,
-            horizontal=True,
-            key="consulta_quick",
-            label_visibility="collapsed",
-            on_change=_apply_quick_from_control,
-        )
-        st.markdown("</div></div>", unsafe_allow_html=True)
-    # =========================
-    # TAB: LISTA (principal)
-    # =========================
-    if tab_choice == "Lista":
-                # Barra superior: busca + filtros (executivo / clean)
-        st.text_input(
-            "Buscar",
-            key="c_q",
-            placeholder="OC, solicitação, descrição, fornecedor, código material/equipamento…",
-            label_visibility="collapsed",
-        )
-
-        # Filtros completos ficam na sidebar (evita poluir a tela)
-        with st.sidebar.expander("🎛️ Filtros", expanded=False):
-            # Departamento
-            if "departamento" in df.columns:
-                dept_opts = sorted(df["departamento"].dropna().astype(str).unique().tolist())
-                st.multiselect("Departamento", dept_opts, key="c_deptos", placeholder="Todos")
-            else:
-                st.multiselect("Departamento", [], key="c_deptos", placeholder="Todos")
+# ===== Navegação: IDs internos (não dependem de label/emoji) =====
+PAGE_LABELS = {
+    "home": "Início",
+    "dashboard": "Dashboard",
+    "alerts": "Alertas",
+    "orders_search": "Consultar pedidos",
+    "profile": "Meu perfil",
+    "material_sheet": "Ficha de material",
+    "catalog_materials": "Catálogo de Materiais",
+    "orders_manage": "Gestão de pedidos",
+    "map": "Mapa",
+    "users": "Gestão de usuários",
+    "backup": "Backup",
+    "saas_admin": "Admin do SaaS",
+    "observability": "Observabilidade",
+    "tenant_health": "Saúde por Tenant",
+    "audit_logs": "Auditoria",
+    "exec_metrics": "Métricas Executivas",
+    "tenant_ranking": "Ranking de Tenants",
+    "snapshots": "Snapshots",
+    "reports_whatsapp": "Relatórios WhatsApp",
+    "reports_gerenciais": "Relatórios Gerenciais",
+    "reports": "Relatórios",
+    "imports": "Importações",
+    "dept_almox_config": "Vínculo Depto ↔ Almox",
+}
 
 
+LEGACY_PAGE_TO_ID = {
 
-            # UF do fornecedor
-            if "fornecedor_uf" in df.columns:
-                uf_opts = sorted(
-                    df["fornecedor_uf"].dropna().astype(str).str.strip().str.upper().unique().tolist()
-                )
-                st.multiselect("UF", uf_opts, key="c_uf", placeholder="Todas")
-            else:
-                st.multiselect("UF", [], key="c_uf", placeholder="Todas")
+    "Início": "home",
+    "Alertas": "alerts",
+    "Consultar pedidos": "orders_search",
+    "Consultar Pedidos": "orders_search",
+    "Meu perfil": "profile",
+    "Meu Perfil": "profile",
+    "Ficha de material": "material_sheet",
+    "Ficha de Material": "material_sheet",
+    "Gestão de pedidos": "orders_manage",
+    "Gestão de Pedidos": "orders_manage",
+    "Mapa": "map",
+    "Mapa Geográfico": "map",
+    "Gestão de usuários": "users",
+    "Gestão de Usuários": "users",
+    "Backup": "backup",
+    "Admin do SaaS": "saas_admin",
+    "🏠 Início": "home",
+    "Dashboard": "dashboard",
+    "🔔 Alertas e Notificações": "alerts",
+    "Consultar Pedidos": "orders_search",
+    "Meu Perfil": "profile",
+    "Ficha de Material": "material_sheet",
+    "Gestão de Pedidos": "orders_manage",
+    "Mapa Geográfico": "map",
+    "👥 Gestão de Usuários": "users",
+    "💾 Backup": "backup",
+    "🧩 Admin do SaaS": "saas_admin",
+    "Observabilidade": "observability",
+    "Saúde por Tenant": "tenant_health",
+    "Auditoria": "audit_logs",
+    "Métricas Executivas": "exec_metrics",
+    "Ranking de Tenants": "tenant_ranking",
+    "Snapshots": "snapshots",
+    "Relatórios": "reports",
+    "Importações": "imports",
+}
 
-            # Status
-            if "status" in df.columns:
-                status_opts = sorted(df["status"].dropna().astype(str).unique().tolist())
-                st.session_state["consulta_status_opts"] = status_opts
-                # Normaliza valores atuais para evitar erro se preset tiver valor inválido
-                current_status = st.session_state.get("c_status_list", []) or []
-                st.session_state["c_status_list"] = [s for s in current_status if s in status_opts]
-                st.multiselect("Status", status_opts, key="c_status_list", placeholder="Todos")
-            else:
-                current_status = st.session_state.get("c_status_list", []) or []
-                st.session_state["c_status_list"] = [s for s in current_status if s in STATUS_VALIDOS]
-                st.session_state["consulta_status_opts"] = STATUS_VALIDOS
-                st.multiselect("Status", STATUS_VALIDOS, key="c_status_list", placeholder="Todos")
+def page_label(page_id: str, total_alertas: int = 0) -> str:
+    """Label visual da página (sem emoji)."""
+    if page_id == "alerts":
+        return _label_alertas(total_alertas)
+    return PAGE_LABELS.get(page_id, page_id)
 
-            st.divider()
-            st.markdown("**Códigos (somente números)**")
+def _fu_glyph(icon_key: str) -> str:
+    """SVG monocromático (controlado por CSS) para sidebar compacta."""
+    icons = {
+        "home": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 7v11a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V10l9-7z"/></glyph>',
+        "dashboard": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h7V4H4v9zm9 7h7V11h-7v9zM4 20h7v-5H4v5zm9-16v5h7V4h-7z"/></glyph>',
+        "bell": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zM18 16v-5a6 6 0 1 0-12 0v5L4 18v1h16v-1l-2-2z"/></glyph>',
+        "search": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M10 18a8 8 0 1 1 5.29-14.02A8 8 0 0 1 10 18zm11 3-6-6 1.41-1.41 6 6L21 21z"/></glyph>',
+        "user": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-5 0-9 2.5-9 5.5V22h18v-2.5C21 16.5 17 14 12 14z"/></glyph>',
+        "receipt": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h12v20l-2-1-2 1-2-1-2 1-2-1-2 1V2zm3 5h6v2H9V7zm0 4h6v2H9v-2zm0 4h6v2H9v-2z"/></glyph>',
+        "cart": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm10 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM6.2 6h15.1l-1.4 7.2a2 2 0 0 1-2 1.6H8.1a2 2 0 0 1-2-1.6L4.3 2H2v2h1l2.2 11.2A4 4 0 0 0 9.1 18H19v-2H9.1a2 2 0 0 1-2-1.6L6.8 13h11.1a4 4 0 0 0 3.9-3.2L23.6 6H6.2z"/></glyph>',
+        "map": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 3.5 15 5.7 9 3 3.5 4.8A1 1 0 0 0 3 5.7v14.6a1 1 0 0 0 1.3.95L9 19.3l6 2.7 5.5-1.8a1 1 0 0 0 .7-.95V4.5a1 1 0 0 0-1.2-1zM9 17.6l-4 1.3V6.4l4-1.3v12.5zm6 1.3-4-1.8V4.6l4 1.8v12.5zm4-1.3-4 1.3V6.4l4-1.3v12.5z"/></glyph>',
+        "whatsapp": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2zm5.7 14.3c-.2.6-1.1 1.1-1.8 1.2-.5.1-1.2.2-3.9-.8-3.4-1.3-5.5-4.6-5.7-4.8-.2-.2-1.4-1.8-1.4-3.4 0-1.6.8-2.3 1.1-2.6.3-.3.6-.4.8-.4h.6c.2 0 .4 0 .6.5.2.5.8 1.9.9 2 .1.2.1.4 0 .6-.1.2-.2.4-.3.5l-.3.4c-.1.2-.3.4-.1.7.2.3.7 1.3 1.6 2.1 1.1 1 2 1.3 2.3 1.5.3.2.5.2.7 0l.9-1.1c.2-.3.5-.2.7-.1.2.1 1.6.8 1.9.9.3.1.5.2.6.4.1.2.1.7-.1 1.3z"/></glyph>',
+        "chart": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16v2H2V3h2v16zm4-2H6V10h2v7zm5 0h-2V6h2v11zm5 0h-2v-5h2v5z"/></glyph>',
+        "users": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4zM8 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm8 2c-2.7 0-8 1.3-8 4v3h16v-3c0-2.7-5.3-4-8-4zM8 13c-2.7 0-8 1.3-8 4v3h6v-3c0-1.6.9-2.9 2.2-3.8-.1-.1-.2-.2-.2-.2z"/></glyph>',
+        "database": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C7 2 3 3.8 3 6v12c0 2.2 4 4 9 4s9-1.8 9-4V6c0-2.2-4-4-9-4zm0 2c4.4 0 7 .1 7 2s-2.6 2-7 2-7-.1-7-2 2.6-2 7-2zm0 16c-4.4 0-7-.1-7-2v-2c1.6 1.1 4.7 1.7 7 1.7s5.4-.6 7-1.7v2c0 1.9-2.6 2-7 2zm0-6c-4.4 0-7-.1-7-2V10c1.6 1.1 4.7 1.7 7 1.7s5.4-.6 7-1.7v2c0 1.9-2.6 2-7 2z"/></glyph>',
+        "puzzle": '<glyph viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2a2 2 0 0 1 2 2v2h2a2 2 0 0 1 2 2v3h-2a2 2 0 1 0 0 4h2v3a2 2 0 0 1-2 2h-2v-2a2 2 0 1 0-4 0v2H7a2 2 0 0 1-2-2v-3h2a2 2 0 1 0 0-4H5V8a2 2 0 0 1 2-2h6V4a2 2 0 0 1 2-2z"/></glyph>',
+    }
+    return icons.get(icon_key, icons["dashboard"])
 
-            c_eq = _numeric_autocomplete(
-                "Cód. equipamento",
-                df["cod_equipamento"] if "cod_equipamento" in df.columns else pd.Series([], dtype=str),
-                "f_cod_equip",
+
+def _fu_render_compact_sidebar(total_alertas: int, is_admin: bool, is_superadmin: bool) -> None:
+    """Sidebar compacta robusta (SEM HTML/SVG): usa st.button com glyphs monocromáticos.
+    - Padrão: ícone branco
+    - Hover: vermelho
+    - Ativo: fundo vermelho cheio + ícone branco
+    """
+
+    items: list[tuple[str, str, str]] = [
+        ("⌂", "home", "Início"),
+        ("▦", "dashboard", "Dashboard"),
+        ("◎", "alerts", "Alertas"),
+        ("⌕", "orders_search", "Consultar pedidos"),
+        ("◉", "profile", "Meu perfil"),
+        ("≣", "material_sheet", "Ficha de material"),
+        ("▤", "orders_manage", "Gestão de pedidos"),
+        ("⌖", "map", "Mapa"),
+        ("◌", "reports_whatsapp", "Relatórios WhatsApp"),
+        ("▧", "reports_gerenciais", "Relatórios Gerenciais"),
+    ]
+
+    if is_admin:
+        items += [
+            ("◍", "users", "Gestão de usuários"),
+            ("▣", "backup", "Backup"),
+        ]
+        if is_superadmin:
+            items += [
+                ("⬚", "saas_admin", "Admin do SaaS"),
+                ("◈", "observability", "Observabilidade"),
+                ("▥", "tenant_health", "Saúde por Tenant"),
+                ("▦", "tenant_ranking", "Ranking de Tenants"),
+                ("▦", "audit_logs", "Auditoria"),
+                ("▩", "exec_metrics", "Métricas Executivas"),
+                ("▢", "snapshots", "Snapshots"),
+            ]
+
+    current = st.session_state.get("current_page") or "home"
+
+    st.markdown('<div class="fu-compact-nav">', unsafe_allow_html=True)
+
+    for glyph, page_id, tip in items:
+        active = (page_id == current)
+
+        st.markdown('<div class="fu-compact-row">', unsafe_allow_html=True)
+        if active:
+            st.markdown('<div class="fu-compact-active">', unsafe_allow_html=True)
+
+        if st.button(glyph, help=tip, key=f"fu_nav_btn_{page_id}"):
+            if page_id != st.session_state.get("current_page"):
+                st.session_state.current_page = page_id
+                st.session_state["_force_menu_sync"] = True
+                st.rerun()
+
+        if active:
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _sidebar_footer(supabase_client) -> None:
+    """Renderiza Sair + créditos (sempre por último na sidebar)."""
+    st.markdown("<div class=\"fu-sidebar-footer\">", unsafe_allow_html=True)
+    st.markdown("---")
+    if st.button("Sair", use_container_width=True, key="btn_logout_sidebar"):
+        try:
+            ba.registrar_acao(
+                st.session_state.usuario,
+                "Logout",
+                {"timestamp": datetime.now().isoformat()},
+                supabase_client,
             )
-            c_mat = _numeric_autocomplete(
-                "Cód. material",
-                df["cod_material"] if "cod_material" in df.columns else pd.Series([], dtype=str),
-                "f_cod_mat",
-            )
+        except Exception:
+            pass
 
-            st.session_state["_tmp_cod_equip"] = c_eq
-            st.session_state["_tmp_cod_mat"] = c_mat
+        try:
+            fazer_logout(supabase_anon)
+        except Exception:
+            pass
+        st.rerun()
 
-            st.checkbox("Somente atrasados", key="c_atraso")
-            st.selectbox("Itens por página", [25, 50, 100, 200, 500], key="c_pp")
+    # Oculta o rodapé no modo colapsado (evita ficar prensado)
+    if st.session_state.get("fu_sidebar_hidden"):
+        return
 
-            aF1, aF2 = st.columns(2)
-            if aF1.button("Aplicar", use_container_width=True):
-                st.session_state["c_cod_equip"] = st.session_state.get("_tmp_cod_equip", "")
-                st.session_state["c_cod_mat"] = st.session_state.get("_tmp_cod_mat", "")
-                st.session_state["c_pag"] = 1
-                st.rerun()
-            if aF2.button("Limpar", use_container_width=True):
-                for k in ["c_q", "c_deptos", "c_status_list", "c_cod_equip", "c_cod_mat", "_tmp_cod_equip", "_tmp_cod_mat", "c_atraso", "c_pp", "c_pag", "consulta_selected_pid", "consulta_auto_opened_pid", "go_key"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
+    st.markdown(
+        """
+        <div style="font-size:11px; opacity:0.6; margin-top:10px;">
+            © Follow-up de Compras v3.0<br>
+            Criado por André Luis e Yasmim Lima
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-        # Aplicar filtros (sem “fake rerun”)
-        df_f = _apply_filters(
-            df,
-            st.session_state.get("c_q", ""),
-            st.session_state.get("c_deptos", []),
-            st.session_state.get("c_uf", []),
-            st.session_state.get("c_status_list", []),
-            st.session_state.get("c_atraso", False),
-            st.session_state.get("c_cod_equip", ""),
-            st.session_state.get("c_cod_mat", ""),
+
+def _sync_empresa_nome(tenant_id: str | None, tenant_opts) -> None:
+    """Mantém um nome de empresa legível no session_state (para Perfil / UI)."""
+    try:
+        if not tenant_id:
+            return
+        nome = None
+        if tenant_opts and isinstance(tenant_opts, list):
+            for t in tenant_opts:
+                if isinstance(t, dict) and t.get("tenant_id") == tenant_id:
+                    nome = t.get("nome") or t.get("name") or t.get("razao_social")
+                    break
+        nome_final = (str(nome).strip() if isinstance(nome, str) and nome.strip() else str(tenant_id))
+        st.session_state["empresa_nome"] = nome_final
+        # compat com chaves antigas
+        st.session_state["empresa_atual"] = nome_final
+    except Exception:
+        pass
+
+
+@st.cache_data(max_entries=256, ttl=60)
+def _fetch_almoxarifados_tenant(_supabase, tenant_id: str) -> list[str]:
+    try:
+        res = (
+            _supabase
+            .table("vw_almoxarifados")
+            .select("almoxarifado")
+            .eq("tenant_id", tenant_id)
+            .limit(500)  # aqui pode ser baixo, pq já é distinct
+            .execute()
         )
 
-        # KPIs dinâmicos (baseado nos filtros)
-        k1, k2, k3, k4 = st.columns(4)
-        total_itens = int(len(df_f))
-        atrasados = (
-            int(df_f.get("dias_atraso", pd.Series([], dtype=float)).fillna(0).astype(float).gt(0).sum())
-            if not df_f.empty
-            else 0
-        )
-        sem_oc = (
-            int(df_f.get("nr_oc", pd.Series([], dtype=str)).fillna("").astype(str).isin(["", "0"]).sum())
-            if "nr_oc" in df_f.columns
-            else 0
-        )
-        valor_total = (
-            float(df_f.get("valor_total", pd.Series([], dtype=float)).fillna(0).astype(float).sum())
-            if "valor_total" in df_f.columns
-            else 0.0
-        )
-        k1.metric("Resultados", f"{total_itens}")
-        k2.metric("Atrasados", f"{atrasados}")
-        k3.metric("Sem OC", f"{sem_oc}")
-        k4.metric("Valor", f"R$ {valor_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        st.markdown("---")
-        st.caption("Legenda: 🟢 OK/Tem OC • 🟡 Em aberto • 🟠 Transporte • 🔴 Atrasado • 🔵 Sem OC")
+        rows = getattr(res, "data", None) or []
+        vals = []
+        for r in rows:
+            v = (r or {}).get("almoxarifado")
+            if v is None:
+                continue
+            v = str(v).strip()
+            if v:
+                vals.append(v)
 
-        # Chips compactos
-        chips = []
-        if st.session_state.get("c_q"):
-            chips.append(f"Busca: {st.session_state['c_q']}")
-        if st.session_state.get("c_deptos"):
-            d = st.session_state["c_deptos"]
-            chips.append(f"Depto: {', '.join(d[:2])}{'…' if len(d)>2 else ''}")
-        if st.session_state.get("c_status_list"):
-            s = st.session_state["c_status_list"]
-            chips.append(f"Status: {', '.join(s[:2])}{'…' if len(s)>2 else ''}")
-        if st.session_state.get("c_atraso"):
-            chips.append("Atrasados")
-        if st.session_state.get("c_cod_equip"):
-            chips.append(f"Eq: {st.session_state['c_cod_equip']}")
-        if st.session_state.get("c_cod_mat"):
-            chips.append(f"Mat: {st.session_state['c_cod_mat']}")
-        if chips:
-            st.caption(" | ".join(chips))
+        return vals  # já vem ordenado pela view
 
-        # Paginação com setas (compacta)
-        total = len(df_f)
-        pp = int(st.session_state.get("c_pp", 50))
-        total_pages = max(1, math.ceil(total / pp))
-        st.session_state["c_pag"] = min(max(1, int(st.session_state.get("c_pag", 1))), total_pages)
+    except Exception as e:
+        st.sidebar.warning(f"Erro carregando almoxarifados: {e}")
+        return []
 
-        nav1, nav2, nav3 = st.columns([1, 2, 1])
-        with nav1:
-            if st.button("◀", disabled=st.session_state["c_pag"] <= 1, use_container_width=True):
-                st.session_state["c_pag"] -= 1
-                st.rerun()
-        with nav2:
+
+def selecionar_empresa_no_login() -> bool:
+    """Após autenticar, força seleção do tenant quando houver mais de uma empresa."""
+
+    # 🔥 Se já escolheu empresa, não mostra novamente
+    if st.session_state.get("tenant_id"):
+        return True
+
+    tenant_opts = st.session_state.get("tenant_options", []) or []
+
+    if not tenant_opts:
+        return True
+
+    if len(tenant_opts) == 1:
+        st.session_state["tenant_id"] = tenant_opts[0]["tenant_id"]
+        _sync_empresa_nome(st.session_state.get("tenant_id"), tenant_opts)
+        return True
+
+    st.title("🏢 Selecione a empresa")
+
+    nomes = {t["tenant_id"]: (t.get("nome") or t["tenant_id"]) for t in tenant_opts}
+
+    escolhido = st.selectbox(
+        "Empresa",
+        options=list(nomes.keys()),
+        format_func=lambda x: nomes.get(x, x),
+        key="select_tenant_login",
+    )
+
+    c1, c2 = st.columns([1, 1])
+
+    if c1.button("Entrar", use_container_width=True):
+        st.session_state["tenant_id"] = escolhido
+        _sync_empresa_nome(escolhido, tenant_opts)
+        st.rerun()
+
+    if c2.button("Sair", use_container_width=True):
+        try:
+            fazer_logout(supabase_anon)
+        except Exception:
+            pass
+        st.rerun()
+
+    return False
+
+
+
+@st.cache_data(max_entries=256, ttl=120)
+def _cached_carregar_pedidos(_supabase, tenant_id, almoxarifado):
+    return carregar_pedidos(_supabase, tenant_id, almoxarifado)
+
+@st.cache_data(max_entries=256, ttl=120)
+def _cached_carregar_fornecedores(_supabase, tenant_id):
+    return carregar_fornecedores(_supabase, tenant_id, incluir_inativos=True)
+
+
+@st.cache_data(max_entries=256, ttl=60)
+def _cached_alertas(df_pedidos, df_fornecedores):
+    return sa.calcular_alertas(df_pedidos, df_fornecedores)
+
+
+
+def _norm_txt(s: str) -> str:
+    """Normaliza texto para comparação (remove acentos, espaços, caixa)."""
+    if s is None:
+        return ""
+    s = str(s).strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+def main():
+
+    # 🔒 Garante estrutura mínima de sessão (evita AttributeError)
+    if "usuario" not in st.session_state or not isinstance(st.session_state.get("usuario"), dict):
+        st.session_state.usuario = {}
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
+
+    # UI System (CSS padronizado): não conflita com o CSS existente
+    try:
+        apply_ui_theme()
+    except Exception:
+        pass
+
+
+    # Navegação via query param (usado pelos ícones monocromáticos da sidebar compacta)
+    nav = st.query_params.get("nav")
+    if nav:
+        try:
+            nav = str(nav)
+        except Exception:
+            nav = None
+        if nav:
+            st.session_state.current_page = nav
+            try:
+                del st.query_params["nav"]
+            except Exception:
+                pass
+            st.rerun()
+
+
+
+    qp_page = st.query_params.get("page")
+    if qp_page:
+        st.session_state["fu_route"] = qp_page
+
+    route = st.session_state.get("fu_route") or "landing"
+
+
+
+    # 🧪 Debug rápido (ative com ?debug=1)
+    if st.query_params.get("debug") in ("1", "true", "yes"):
+        st.sidebar.markdown("### 🧪 Debug (sessão)")
+        st.sidebar.json({
+            "route": st.session_state.get("fu_route"),
+            "page_param": st.query_params.get("page"),
+            "auth_ok": bool(verificar_autenticacao()),
+            "tenant_id": st.session_state.get("tenant_id"),
+            "tenant_opts_len": len(st.session_state.get("tenant_options", []) or []),
+            "has_tokens": bool(st.session_state.get("auth_access_token")),
+            "usuario_keys": list((st.session_state.get("usuario") or {}).keys()) if isinstance(st.session_state.get("usuario"), dict) else str(type(st.session_state.get("usuario"))),
+        })
+    # Se já estiver autenticado, não mantenha "page=login" (isso prende o app no modo login em todo rerun)
+    if verificar_autenticacao():
+        if st.query_params.get("page") in ("login", "landing"):
+            try:
+                del st.query_params["page"]
+            except Exception:
+                pass
+            st.session_state["fu_route"] = "app"
+            route = "app"
+
+    if route == "first_access":
+        from first_access import render_first_access
+        render_first_access(supabase_anon)
+        st.stop()
+
+    if route == "reset_request":
+        from reset_password import render_request_reset
+        render_request_reset(supabase_anon)
+        st.stop()
+
+    # Se veio de um link de recovery (redefinição), renderiza a tela automaticamente
+    if st.session_state.get("auth_flow_type") == "recovery":
+        from reset_password import render_reset_password
+        render_reset_password(supabase_anon)
+        st.stop()
+
+    # 🌐 Landing pública (antes do login)
+    # Padrão para usuários não autenticados: landing
+    if (route == "landing") and (not verificar_autenticacao()):
+        render_landing()
+        st.stop()
+
+    # Rota explícita de login (antes do app)
+    if not verificar_autenticacao():
+        st.session_state["fu_route"] = "login"
+        if st.query_params.get("page") != "login":
+            st.query_params["page"] = "login"
+
+        st.markdown(
+            '''
+            <style>
+              /* Esconde espaços extras do Streamlit em telas pequenas */
+              section.main > div { padding-top: 1.5rem; }
+              .block-container { max-width: 980px; }
+
+              /* Card clean */
+              .fu-auth-wrap{ max-width: 820px; margin: 0 auto; }
+              .fu-card{
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 22px;
+                padding: 22px 22px 18px 22px;
+                background: rgba(255,255,255,0.03);
+                box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+              }
+              .fu-header{
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                gap:12px;
+                margin-bottom: 10px;
+              }
+              .fu-brand{
+                display:flex;
+                align-items:center;
+                gap:10px;
+              }
+              .fu-brand h1{
+                font-size: 1.35rem;
+                margin:0;
+                padding:0;
+                font-weight: 750;
+              }
+              .fu-brand p{
+                margin:2px 0 0 0;
+                color: rgba(255,255,255,0.62);
+                font-size: 0.92rem;
+              }
+              .fu-chip{
+                font-size: 0.82rem;
+                padding: 6px 10px;
+                border-radius: 999px;
+                border: 1px solid rgba(255,255,255,0.10);
+                color: rgba(255,255,255,0.70);
+                background: rgba(255,255,255,0.03);
+              }
+              /* Links discretos */
+              .fu-links{
+                display:flex;
+                gap:14px;
+                align-items:center;
+                font-size:0.90rem;
+                opacity:0.88;
+              }
+              .fu-links a{
+                text-decoration:none;
+                color: rgba(255,255,255,0.72);
+                padding: 4px 8px;
+                border-radius: 10px;
+                transition: all 120ms ease-in-out;
+              }
+              .fu-links a:hover{
+                color: rgba(255,255,255,0.92);
+                background: rgba(255,255,255,0.06);
+              }
+              .fu-sep{ color: rgba(255,255,255,0.22); }
+              /* Botões mais “SaaS” */
+              div.stButton > button{ border-radius: 14px; }
+              @media (max-width: 720px){
+                .fu-header{ flex-direction:column; align-items:flex-start; }
+                .fu-links{ justify-content:flex-start; flex-wrap:wrap; }
+              }
+            </style>
+            ''',
+            unsafe_allow_html=True,
+        )
+
+        # Modal state
+        if "fu_magic_modal_open" not in st.session_state:
+            st.session_state["fu_magic_modal_open"] = False
+
+        def _open_magic_modal():
+            st.session_state["fu_magic_modal_open"] = True
+
+        st.markdown('<div class="fu-auth-wrap"><div class="fu-card">', unsafe_allow_html=True)
+
+        # Header (compacto)
+        st.markdown(
+            '''
+            <div class="fu-header">
+              <div class="fu-brand">
+                <div style="font-size:1.35rem;">📦</div>
+                <div>
+                  <h1>Follow-up de Compras</h1>
+                  <p>Acesse sua conta para continuar.</p>
+                </div>
+              </div>
+              <span class="fu-chip">Secure • Multiempresa</span>
+            </div>
+            ''',
+            unsafe_allow_html=True,
+        )
+
+        # Form principal (e-mail + senha)
+        if supabase_anon is None:
+            st.error("Supabase (anon) não inicializou. Verifique seus secrets/env no Streamlit Cloud.")
+        else:
+            exibir_login(supabase_anon)
+
+        # Linha de ações (links + botão link mágico)
+        left, right = st.columns([3, 2])
+        with left:
             st.markdown(
-                f'<div style="text-align:center" class="small-muted">Página <b>{st.session_state["c_pag"]}</b> de <b>{total_pages}</b> • <b>{total}</b> itens</div>',
+                '''
+                <div class="fu-links">
+                  <a href="?page=reset_request">Esqueci minha senha</a>
+                  <span class="fu-sep">•</span>
+                  <a href="?page=first_access">Primeiro acesso</a>
+                </div>
+                ''',
                 unsafe_allow_html=True,
             )
-        with nav3:
-            if st.button("▶", disabled=st.session_state["c_pag"] >= total_pages, use_container_width=True):
-                st.session_state["c_pag"] += 1
+        with right:
+            if st.button("Entrar por link", use_container_width=True):
+                _open_magic_modal()
+
+        st.markdown('</div></div>', unsafe_allow_html=True)
+
+        # Modal (dialog) — fallback para expander se necessário
+        if st.session_state.get("fu_magic_modal_open"):
+            try:
+                @st.dialog("Entrar por link (sem senha)")
+                def _magic_dialog():
+                    st.caption("Digite seu e-mail e enviaremos um link de acesso.")
+                    email_magic = st.text_input("E-mail", key="magic_email_modal")
+
+                    csend, ccancel = st.columns([1, 1])
+                    with csend:
+                        enviar = st.button("Enviar link", type="primary", use_container_width=True)
+                    with ccancel:
+                        cancelar = st.button("Cancelar", use_container_width=True)
+
+                    if cancelar:
+                        st.session_state["fu_magic_modal_open"] = False
+                        st.rerun()
+
+                    if enviar:
+                        if not email_magic or "@" not in email_magic:
+                            st.error("Informe um e-mail válido.")
+                            st.stop()
+                        try:
+                            supabase_anon.auth.sign_in_with_otp({
+                                "email": email_magic,
+                                "options": {
+                                    "email_redirect_to": "https://followupdef.streamlit.app/?auth_callback=1"
+                                }
+                            })
+                            ux.ok("Link enviado! Verifique seu e-mail.")
+                            st.session_state["fu_magic_modal_open"] = False
+                        except Exception as e:
+                            st.error(f"Falha ao enviar link: {e}")
+
+                _magic_dialog()
+            except Exception:
+                with st.expander("Entrar por link (sem senha)"):
+                    email_magic = st.text_input("E-mail", key="magic_email_fallback")
+                    if st.button("Enviar link de acesso", use_container_width=True):
+                        try:
+                            supabase_anon.auth.sign_in_with_otp({
+                                "email": email_magic,
+                                "options": {
+                                    "email_redirect_to": "https://followupdef.streamlit.app/?auth_callback=1"
+                                }
+                            })
+                            ux.ok("Link enviado! Verifique seu e-mail.")
+                        except Exception as e:
+                            st.error(f"Falha ao enviar link: {e}")
+
+        return
+
+    # Seleção obrigatória de empresa (quando houver mais de uma)
+    if not selecionar_empresa_no_login():
+        return
+
+    # Client do usuário autenticado (RLS ativo)
+    # Renova JWT automaticamente se expirou
+
+    if _jwt_expirou():
+
+        ok = _refresh_session()
+
+        if not ok:
+
+            ux.warn("Sessão expirada. Faça login novamente.")
+
+            try:
+
+                fazer_logout(supabase_anon)
+
+            except Exception:
+
+                pass
+
+            st.rerun()
+
+
+    supabase = get_supabase_user_client(st.session_state.auth_access_token)
+    st.session_state["supabase_client"] = supabase
+    handle_auth_callback(supabase)
+    # --- Garantir user_id na sessão (necessário para criado_por NOT NULL) ---
+    try:
+        u = supabase.auth.get_user()
+        uid = getattr(getattr(u, "user", None), "id", None) or getattr(u, "id", None)
+        if uid:
+            st.session_state["user_id"] = str(uid)
+            if isinstance(st.session_state.get("usuario"), dict):
+                st.session_state["usuario"]["user_id"] = str(uid)
+    except Exception:
+        # fallback: decodifica JWT (sub)
+        try:
+            tok = st.session_state.get("auth_access_token") or ""
+            parts = tok.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
+                uid = payload.get("sub")
+                if uid:
+                    st.session_state["user_id"] = str(uid)
+                    if isinstance(st.session_state.get("usuario"), dict):
+                        st.session_state["usuario"]["user_id"] = str(uid)
+        except Exception:
+            pass
+    # Super Admin (SaaS)
+    try:
+        st.session_state.is_superadmin = bool(is_superadmin(supabase))
+    except Exception:
+        st.session_state.is_superadmin = False
+    # Seleção de empresa (se o usuário tiver mais de uma)
+    tenant_opts = st.session_state.get("tenant_options", []) or []
+    tenant_id = st.session_state.get("tenant_id")
+
+    # Define padrão
+    if not tenant_id and tenant_opts:
+        tenant_id = tenant_opts[0]["tenant_id"]
+        st.session_state.tenant_id = tenant_id
+        _sync_empresa_nome(tenant_id, tenant_opts)
+
+    # Se o usuário tiver mais de uma empresa, permite escolher
+    if tenant_opts and len(tenant_opts) > 1:
+        with st.sidebar:
+            nomes = {t["tenant_id"]: (t.get("nome") or t["tenant_id"]) for t in tenant_opts}
+            current = st.session_state.get("tenant_id") or tenant_opts[0]["tenant_id"]
+            ids = list(nomes.keys())
+            idx = ids.index(current) if current in ids else 0
+            escolhido = st.selectbox(
+                "Empresa",
+                options=ids,
+                format_func=lambda x: nomes.get(x, x),
+                index=idx,
+            )
+
+            if escolhido != current:
+                st.session_state.tenant_id = escolhido
+                _sync_empresa_nome(escolhido, tenant_opts)
+                # atualiza perfil conforme empresa selecionada
+                role = next((t.get("role") for t in tenant_opts if t.get("tenant_id") == escolhido), "user")
+                if "usuario" in st.session_state and isinstance(st.session_state.usuario, dict):
+                    st.session_state.usuario["tenant_id"] = escolhido
+                    st.session_state.usuario["perfil"] = role
                 st.rerun()
 
-        ini = (st.session_state["c_pag"] - 1) * pp
-        fim = ini + pp
-        page = df_f.iloc[ini:fim].copy()
+    tenant_id = st.session_state.get("tenant_id") or tenant_id
+    _sync_empresa_nome(tenant_id, tenant_opts)
+    if not tenant_id:
+        st.error("Não foi possível determinar sua empresa (tenant).")
+        return
 
-        # Tabela mais limpa: evita descrições enormes
-        show_cols = []
-        preferred = ["cod_equipamento", "descricao", "nr_oc", "nr_solicitacao", "departamento", "status", "cod_material", "valor_total", "dias_atraso"]
-        for c in preferred:
-            if c in page.columns:
-                show_cols.append(c)
-        if not show_cols:
-            show_cols = page.columns.tolist()
+    # ===== Contexto global: Almoxarifado (filtro global) =====
+    if "almox_ctx" not in st.session_state:
+        st.session_state["almox_ctx"] = "Todos"
 
-        if "descricao" in page.columns:
-            page["descricao"] = page["descricao"].fillna("").astype(str).str.slice(0, 90) + page["descricao"].fillna("").astype(str).apply(lambda x: "…" if len(x) > 90 else "")
+    # ===== Filtro global por Almoxarifado (contexto do app) =====
+    # Mostra apenas quando a sidebar está expandida (evita “prensar” no modo compacto/mobile).
+    if True:
+        with st.sidebar:
+            st.markdown("### Contexto")
+            almox_list = _fetch_almoxarifados_tenant(supabase, tenant_id)
+            options_almox = ["Todos"] + almox_list
+
+            current_almox = st.session_state.get("almox_ctx") or "Todos"
+            if current_almox not in options_almox:
+                current_almox = "Todos"
+                st.session_state["almox_ctx"] = "Todos"
+
+            selecionado = st.selectbox(
+                "Almoxarifado",
+                options=options_almox,
+                index=options_almox.index(current_almox),
+                help="Filtro global: ao selecionar, o sistema passa a mostrar apenas pedidos deste almoxarifado (quando disponível no catálogo).",
+            )
+
+            if selecionado != st.session_state.get("almox_ctx"):
+                st.session_state["almox_ctx"] = selecionado
+                st.rerun()
 
 
-        # Badge de status
-
-        if "status" in page.columns:
-
-            page["status"] = page["status"].astype(str).apply(_badge_status)
-
-
-        # Tabela (modo responsivo): se data_editor existir, permite selecionar uma linha (checkbox)
-
-        pid_editor = _render_tabela_selecao_unica(page, show_cols)
-
-        if pid_editor:
-            st.session_state["consulta_selected_pid"] = pid_editor
-            st.session_state["consulta_tab_target"] = "Ações"
-            st.rerun()
-# =========================
-    # TAB: VISÃO (KPIs + atalhos)
-    # =========================
-    if tab_choice == "Visão":
-        atrasados = int(_is_atrasado(df).sum())
-        sem_oc = int((df["status"] == "Sem OC").sum()) if "status" in df.columns else 0
-        transporte = int((df["status"] == "Em Transporte").sum()) if "status" in df.columns else 0
-        entregues = int((df["status"] == "Entregue").sum()) if "status" in df.columns else 0
-        total = int(len(df))
-
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Total", total)
-        k2.metric("Atrasados", atrasados)
-        k3.metric("Sem OC", sem_oc)
-        k4.metric("Transporte", transporte)
-        k5.metric("Entregues", entregues)
-
-        st.markdown("##### Atalhos")
-        a1, a2, a3, a4 = st.columns(4)
-        if a1.button("📦 Atrasados", use_container_width=True):
-            st.session_state.update({"c_atraso": True, "c_status_list": [], "c_pag": 1})
-            st.rerun()
-        if a2.button("🧾 Sem OC", use_container_width=True):
-            st.session_state.update({"c_status_list": ["Sem OC"], "c_atraso": False, "c_pag": 1})
-            st.rerun()
-        if a3.button("🚚 Transporte", use_container_width=True):
-            st.session_state.update({"c_status_list": ["Em Transporte"], "c_atraso": False, "c_pag": 1})
-            st.rerun()
-        if a4.button("✅ Entregues", use_container_width=True):
-            st.session_state.update({"c_status_list": ["Entregue"], "c_atraso": False, "c_pag": 1})
-            st.rerun()
-
-        ux.info("Dica: use os atalhos aqui e volte na aba **Lista** para ver o resultado sem poluir a tela.")
-
-    # =========================
-    # TAB: AÇÕES (operacional)
-    # =========================
-    if tab_choice == "Ações":
-        st.markdown("#### Ações rápidas")
-        st.caption("Localize um pedido por OC/Solicitação e abra diretamente na Gestão/Ficha.")
-
-        aC1, aC2, aC3 = st.columns([2.4, 1.0, 2.0])
-        with aC1:
-            st.text_input("OC/SOL", key="go_key", placeholder="Ex: 181151 ou 433526", label_visibility="collapsed")
-        with aC2:
-            if st.button("Ir", use_container_width=True):
-                pid = _find_pid_by_key(df, st.session_state.get("go_key", ""))
-                if pid:
-                    st.session_state["consulta_selected_pid"] = pid
-                    ux.ok("Pedido localizado.")
-                else:
-                    ux.warn("Não encontrei OC/SOL com esse valor.")
-
-        pid = st.session_state.get("consulta_selected_pid")
-        if not pid:
-            ux.info("Selecione um pedido na aba **Lista** ou use o campo acima.")
+    # 🔐 Primeiro acesso: força troca de senha (se implementado em src.core.auth)
+    try:
+        from src.core.auth import verificar_primeiro_acesso, tela_troca_senha_primeiro_acesso
+        if verificar_primeiro_acesso(supabase):
+            tela_troca_senha_primeiro_acesso(supabase)
             return
+    except Exception:
+        # Se ainda não implementou as funções, segue o fluxo normal
+        pass
 
-        row = df[df["id"].astype(str) == str(pid)] if "id" in df.columns else pd.DataFrame()
-        if row.empty and "nr_oc" in df.columns:
-            row = df[df["nr_oc"].fillna("").astype(str) == str(pid)]
-        if row.empty:
-            ux.warn("Pedido selecionado não foi encontrado no dataset atual.")
-            return
+    with st.spinner("🔄 Carregando pedidos..."):
+        df_pedidos = _cached_carregar_pedidos(supabase, tenant_id, st.session_state.get('almox_ctx'))
+        st.session_state["last_update"] = datetime.now().strftime("%H:%M:%S")
 
-        r = row.iloc[0]
 
-        # Mini-card de resumo (responsiva)
-        status_pill = _status_pill(_to_str(r.get('status')))
-        cA, cB = st.columns([2, 1])
-        with cA:
+        # Aplica contexto global de almoxarifado (se o dataframe já contiver a coluna).
+        # Comparação normalizada (remove acentos, espaços, caixa) para evitar divergências
+        # como "IRRIGAÇÃO" vs "IRRIGACAO".
+        almox_ctx = st.session_state.get("almox_ctx") or "Todos"
+        if almox_ctx != "Todos":
+            for col in ("almoxarifado", "Almoxarifado"):
+                if col in df_pedidos.columns:
+                    alvo = _norm_txt(almox_ctx)
+                    serie = df_pedidos[col].astype(str).fillna("").map(_norm_txt)
+                    df_pedidos = df_pedidos[serie == alvo]
+                    break
+    with st.spinner("🔄 Carregando fornecedores..."):
+        df_fornecedores = _cached_carregar_fornecedores(supabase, tenant_id)
+
+    alertas = _cached_alertas(df_pedidos, df_fornecedores)
+    total_alertas = int(alertas.get("total", 0) or 0)
+    alertas_label = _label_alertas(total_alertas)
+    atrasados = _safe_len(alertas.get("pedidos_atrasados"))
+    criticos = _safe_len(alertas.get("pedidos_criticos"))
+    vencendo = _safe_len(alertas.get("pedidos_vencendo"))
+
+    _industrial_sidebar_css()
+
+    # ===== Sidebar topo + menus (SEM botão sair/creditos aqui) =====
+    with st.sidebar:
+
+        usuario = st.session_state.get("usuario") or {}
+        perfil = (usuario.get("perfil") or "").lower()
+        is_admin = perfil == "admin"
+
+        # 📱 Toggle manual de responsividade (mobile-first)
+        if "mobile_mode" not in st.session_state:
+            st.session_state["mobile_mode"] = False
+        st.toggle(
+            "📱 Modo mobile",
+            key="mobile_mode",
+            help="Ative para layouts mais confortáveis em telas pequenas (menos colunas, mais empilhamento e listas em cards).",
+        )
+
+        # 🧾 Toggle global: rótulos em gráficos de barras
+        if "show_chart_labels" not in st.session_state:
+            st.session_state["show_chart_labels"] = (not st.session_state.get("mobile_mode", False))
+        st.toggle(
+            "🧾 Mostrar rótulos nos gráficos",
+            key="show_chart_labels",
+            help="Exibe valores diretamente nas barras (pode poluir em telas pequenas).",
+        )
+        st.divider()
+
+        if True:
+            usuario = st.session_state.get("usuario") or {}
+            nome = usuario.get("nome", "Usuário")
+            perfil = (usuario.get("perfil") or "user").lower()
+            avatar_url = usuario.get("avatar_url")
+
+            # saudação
+            hora = datetime.now(ZoneInfo("America/Fortaleza")).hour
+            if hora < 12:
+                saudacao = "Bom dia"
+            elif hora < 18:
+                saudacao = "Boa tarde"
+            else:
+                saudacao = "Boa noite"
+
+            # badge por perfil
+            if perfil == "admin":
+                badge_cor = "#ef4444"
+            elif perfil == "buyer":
+                badge_cor = "#3b82f6"
+            else:
+                badge_cor = "#10b981"
+
+
             st.markdown(
-                f"""**Resumo**  
-- **OC:** {_to_str(r.get('nr_oc'))} • **SOL:** {_to_str(r.get('nr_solicitacao'))}  
-- **Status:** {status_pill} • **Depto:** {_to_str(r.get('departamento'))}  
-- **Fornecedor:** {_to_str(r.get('fornecedor'))}  
-- **Descrição:** {_to_str(r.get('descricao'))[:220]}{'…' if len(_to_str(r.get('descricao'))) > 220 else ''}  
-"""
-            , unsafe_allow_html=True)
-        with cB:
-            st.markdown("**Ações**")
-            if st.button("Abrir na Gestão", use_container_width=True):
-                st.session_state["pedido_selecionado"] = _to_str(r.get("id") or "")
-                st.session_state["current_page"] = "orders_manage"
+                textwrap.dedent(f"""<div class="fu-card">
+  <p class="fu-user-label">Sistema de Follow-Up</p>
+  <div class="fu-bar"></div>
+
+  <!-- Avatar -->
+  <div style="display:flex; align-items:center; gap:10px; margin: 6px 0 10px 0;">
+    {"<img src='" + (avatar_url or "") + "' style='width:52px;height:52px;border-radius:50%;object-fit:cover;border:1px solid rgba(255,255,255,0.18);'/>" if avatar_url else "<div style='width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#3b82f6);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white;border:1px solid rgba(255,255,255,0.14);'>" + (nome[:1].upper() if nome else "U") + "</div>"}
+    <div>
+      <p class="fu-user-name" style="margin:0;">{nome}</p>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+            <span style="background:{badge_cor};padding:2px 10px;border-radius:999px;font-size:11px;color:white;font-weight:900;letter-spacing:0.2px;">{perfil.upper()}</span>
+            <span style="font-size:11px; opacity:.72;">{saudacao}</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+"""),
+                unsafe_allow_html=True,
+            )
+
+            # KPIs clicáveis (atalhos para Alertas com foco)
+            st.markdown('<div class="fu-kpi-click">', unsafe_allow_html=True)
+            k1, k2 = st.columns(2)
+            with k1:
+                if st.button(
+                    f"⚠️\nAtrasados\n{atrasados}",
+                    key="sb_kpi_atrasados",
+                    use_container_width=True,
+                    help="Abrir Alertas com foco em pedidos atrasados",
+                ):
+                    st.session_state["alerts_focus"] = "atrasados"
+                    st.session_state.current_page = "alerts"
+                    st.rerun()
+            with k2:
+                if st.button(
+                    f"🚨\nCríticos\n{criticos}",
+                    key="sb_kpi_criticos",
+                    use_container_width=True,
+                    help="Abrir Alertas com foco em pedidos críticos",
+                ):
+                    st.session_state["alerts_focus"] = "criticos"
+                    st.session_state.current_page = "alerts"
+                    st.rerun()
+
+            k3, k4 = st.columns(2)
+            with k3:
+                if st.button(
+                    f"⏰\nVencendo\n{vencendo}",
+                    key="sb_kpi_vencendo",
+                    use_container_width=True,
+                    help="Abrir Alertas com foco em pedidos vencendo",
+                ):
+                    st.session_state["alerts_focus"] = "vencendo"
+                    st.session_state.current_page = "alerts"
+                    st.rerun()
+            with k4:
+                if st.button(
+                    f"🔔\nAlertas\n{total_alertas}",
+                    key="sb_kpi_todos",
+                    use_container_width=True,
+                    help="Abrir página de Alertas",
+                ):
+                    st.session_state.pop("alerts_focus", None)
+                    st.session_state.current_page = "alerts"
+                    st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            # 🔎 Busca rápida (navegação)
+            busca = st.text_input(
+                "🔎 Busca rápida",
+                key="global_search_sidebar",
+                placeholder="Ex.: dashboard, alertas, ficha, mapa..."
+            )
+
+            if busca:
+                termo = busca.strip().lower()
+
+                mapa_paginas = {
+                    "dash": "Dashboard",
+                    "dashboard": "Dashboard",
+                    "alert": "alerts",
+                    "notific": "alerts",
+                    "consulta": "Consultar Pedidos",
+                    "pedido": "Consultar Pedidos",
+                    "ficha": "Ficha de Material",
+                    "material": "Ficha de Material",
+                    "gest": "Gestão de Pedidos",
+                    "mapa": "Mapa Geográfico",
+                    "relat": "Relatórios",
+                    "relatorio": "Relatórios",
+                    "import": "Importações",
+                    "importacao": "Importações",
+                    "usu": "Gestão de Usuários",
+                    "usuario": "Gestão de Usuários",
+                    "backup": "Backup",
+                }
+
+                sugestoes = []
+                for chave, destino in mapa_paginas.items():
+                    if chave in termo:
+                        sugestoes.append(destino)
+
+                sugestoes = list(dict.fromkeys(sugestoes))
+
+                if sugestoes:
+                    st.caption("Sugestões:")
+                    for destino in sugestoes[:8]:
+                        if st.button(f"➡️ Ir para {destino}", key=f"goto_{destino}", use_container_width=True):
+                            st.session_state.current_page = LEGACY_PAGE_TO_ID.get(destino, destino)
+                            st.rerun()
+
+            st.markdown("---")
+
+            usuario = st.session_state.get("usuario") or {}
+            perfil = (usuario.get("perfil") or "").lower()
+            is_admin = perfil == "admin"
+            def _nav_button_row(page_id: str, group: str) -> None:
+                """Linha de navegação (alinhada). Usa apenas current_page como fonte de verdade."""
+                active = (page_id == st.session_state.current_page)
+                wrapper_cls = "fu-nav-item fu-nav-item--active" if active else "fu-nav-item"
+
+                st.markdown(f'<div class="{wrapper_cls}">', unsafe_allow_html=True)
+
+                if st.button(
+                    page_label(page_id, total_alertas),
+                    key=f"nav__{group}__{page_id}",
+                    use_container_width=True,
+                ):
+                    if page_id != st.session_state.current_page:
+                        st.session_state.current_page = page_id
+                        st.rerun()
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            # ✅ Navegação (seleção única) — com grupos e header fixo (sem expanders)
+            if "current_page" not in st.session_state:
+                st.session_state.current_page = "home"
+
+            # Helper: render de grupo com header sticky dentro do scroll
+            pagina_atual = st.session_state.get("current_page") or "home"
+
+            def _render_group(title: str, items: list[str], group_key: str) -> None:
+                active_group = pagina_atual in items
+                cls = "fu-group fu-group--active" if active_group else "fu-group"
+
+                st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+                st.markdown(f'<div class="fu-group-h">{title}</div>', unsafe_allow_html=True)
+                st.markdown('<div class="fu-group-b">', unsafe_allow_html=True)
+
+                for pid in items:
+                    _nav_button_row(pid, group_key)
+
+                st.markdown("</div></div>", unsafe_allow_html=True)
+
+            # Fonte de verdade: página atual precisa existir no menu (ou volta para home)
+            all_pages = {"home","dashboard","map","reports","imports","reports_whatsapp","reports_gerenciais","alerts",
+                         "orders_search","material_sheet","catalog_materials","orders_manage",
+                         "users","profile","backup","saas_admin","observability","tenant_health","tenant_ranking",
+                         "audit_logs","exec_metrics","snapshots","dept_almox_config"}
+            if st.session_state.current_page not in all_pages:
+                st.session_state.current_page = "home"
+                pagina_atual = "home"
+
+                        # Definições de grupos (sidebar colapsável)
+            dashboards = ["dashboard", "map", "alerts"]
+
+            operacoes = ["orders_search", "material_sheet", "orders_manage"]
+
+            # Dados (relatórios, catálogo e importações)
+            dados = ["reports"]
+            if is_admin:
+                # Catálogo e Importações são operações administrativas
+                dados += ["catalog_materials", "imports"]
+
+            # Configuração de conta
+            conta = ["profile"]
+            if is_admin:
+                conta = ["users", "profile", "backup", "dept_almox_config"]
+            elif bool(st.session_state.get("is_superadmin")):
+                # superadmin pode configurar vínculos mesmo sem perfil admin
+                conta = ["profile", "dept_almox_config"]
+
+            # Superadmin (somente o que é exclusivo do superadmin)
+            superadmin_pages = []
+            if bool(st.session_state.get("is_superadmin")):
+                superadmin_pages = [
+                    "saas_admin",
+                    "observability",
+                    "tenant_health",
+                    "tenant_ranking",
+                    "audit_logs",
+                    "exec_metrics",
+                    "snapshots",
+                ]
+
+            def _render_group_expander(title: str, items: list[str], group_key: str) -> None:
+                if not items:
+                    return
+                expanded = pagina_atual in items
+                with st.expander(title, expanded=expanded):
+                    for pid in items:
+                        _nav_button_row(pid, group_key)
+
+            # ===== Menu colapsável =====
+            _nav_button_row("home", "root")
+
+            _render_group_expander("Dashboards", dashboards, "dash")
+            _render_group_expander("Operações", operacoes, "ops")
+            _render_group_expander("Dados", dados, "dados")
+            _render_group_expander("Configuração de Conta", conta, "conta")
+
+            if superadmin_pages:
+                _render_group_expander("Superadmin", superadmin_pages, "super")
+
+# Página atual (fonte de verdade)
+        pagina = st.session_state.current_page
+        # Normaliza (caso ainda exista valor antigo por label/emoji)
+        if isinstance(pagina, str) and pagina.startswith("Alertas"):
+            pagina = "alerts"
+            st.session_state.current_page = pagina
+        elif 'LEGACY_PAGE_TO_ID' in globals() and pagina in LEGACY_PAGE_TO_ID:
+            pagina = LEGACY_PAGE_TO_ID[pagina]
+            st.session_state.current_page = pagina
+
+    st.markdown(
+        """
+        <style>
+          .fu-sticky-actions{
+            position: sticky;
+            top: 0;
+            z-index: 999;
+            background: rgba(10,12,16,0.92);
+            backdrop-filter: blur(6px);
+            padding: 0.35rem 0 0.25rem 0;
+            margin: 0 0 0.75rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+          }
+          .fu-sticky-actions .stButton button{
+            width: 100%;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="fu-sticky-actions">', unsafe_allow_html=True)
+    spacer, b1, b2, b3 = st.columns([7, 1.2, 1.2, 1.2])
+
+    with b1:
+        if st.button("🔄 Atualizar", use_container_width=True, key="qa_refresh", help="Limpa cache e recarrega"):
+            st.cache_data.clear()
+            st.rerun()
+
+    with b2:
+        if st.button("📤 Relatórios", use_container_width=True, key="qa_export", help="Abrir Relatórios / Exportação"):
+            st.session_state.current_page = "reports"
+            st.session_state["hub_reports_force"] = "Exportação"
+            st.rerun()
+
+    with b3:
+        if st.button("➕ Novo", use_container_width=True, key="qa_new", help="Criar novo pedido"):
+            st.session_state.current_page = "orders_manage"
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    try:
+        with obs.time_block(f"page.{pagina}"):
+            if pagina == "home":
+                usuario = st.session_state.get("usuario") or {}
+                exibir_home(alertas, usuario_nome=usuario.get("nome", "Usuário"))
+            elif pagina == "dashboard":
+                exibir_dashboard(supabase)
+            elif pagina == "alerts":
+                sa.exibir_painel_alertas(alertas, formatar_moeda_br)
+            elif pagina == "orders_search":
+                exibir_consulta_pedidos(supabase)
+            elif pagina == "material_sheet":
+                exibir_ficha_material(supabase)
+            elif pagina == "orders_manage":
+                _call_page('src.ui.gestao_pedidos','exibir_gestao_pedidos', supabase)
+            elif pagina == "map":
+                exibir_mapa(supabase)
+            elif pagina == "users":
+                exibir_gestao_usuarios(supabase)
+            elif pagina == "backup":
+                ba.realizar_backup_manual(supabase)
+            elif pagina == "catalog_materials":
+                from src.ui.catalogo_materiais import exibir_catalogo_materiais
+                exibir_catalogo_materiais(supabase, tenant_id=tenant_id)
+            elif pagina == "reports_whatsapp":
+                usuario = st.session_state.get("usuario") or {}
+                render_relatorios_whatsapp(
+                    supabase,
+                    tenant_id=tenant_id,
+                    created_by=usuario.get("id"),
+                )
+            elif pagina == "reports_gerenciais":
+                render_relatorios_gerenciais(
+                    supabase,
+                    tenant_id=tenant_id,
+                )
+            elif pagina == "reports":
+                from src.ui.relatorios_hub import exibir_relatorios_hub
+                exibir_relatorios_hub(supabase_user=supabase, supabase_admin=supabase_admin, tenant_id=tenant_id)
+            elif pagina == "imports":
+                from src.ui.importacoes_hub import exibir_importacoes_hub
+                exibir_importacoes_hub(supabase_user=supabase, supabase_admin=supabase_admin, tenant_id=tenant_id)
+            elif pagina == "profile":
+                from src.ui.perfil import exibir_perfil
+                exibir_perfil(supabase)
+            elif pagina == "dept_almox_config":
+                from src.ui.config_depto_almox import exibir_config_depto_almox
+                usuario = st.session_state.get("usuario") or {}
+                perfil = (usuario.get("perfil") or "").lower()
+                if perfil != "admin" and not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                else:
+                    exibir_config_depto_almox(supabase_user=supabase, supabase_admin=supabase_admin, tenant_id=tenant_id)
+            elif pagina == "saas_admin":
+                exibir_admin_saas(supabase)
+            elif pagina == "observability":
+                from src.ui.observabilidade import exibir_observabilidade
+                if not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                elif supabase_admin is None:
+                    st.error("Supabase admin não inicializado (SERVICE ROLE).")
+                else:
+                    exibir_observabilidade(supabase_admin=supabase_admin, supabase_user=supabase)
+            elif pagina == "tenant_health":
+                from src.ui.saude_tenants import exibir_saude_tenants
+                if not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                elif supabase_admin is None:
+                    st.error("Supabase admin não inicializado (SERVICE ROLE).")
+                else:
+                    exibir_saude_tenants(supabase_admin)
+            elif pagina == "tenant_ranking":
+                from src.ui.ranking_tenants import exibir_ranking_tenants
+                if not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                elif supabase_admin is None:
+                    st.error("Supabase admin não inicializado (SERVICE ROLE).")
+                else:
+                    exibir_ranking_tenants(supabase_admin)
+            elif pagina == "audit_logs":
+                from src.ui.auditoria_avancada import exibir_auditoria_avancada
+                if not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                elif supabase_admin is None:
+                    st.error("Supabase admin não inicializado (SERVICE ROLE).")
+                else:
+                    exibir_auditoria_avancada(supabase_admin)
+            elif pagina == "exec_metrics":
+                from src.ui.metricas_executivas import exibir_metricas_executivas
+                if not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                elif supabase_admin is None:
+                    st.error("Supabase admin não inicializado (SERVICE ROLE).")
+                else:
+                    exibir_metricas_executivas(supabase_admin)
+            elif pagina == "snapshots":
+                from src.ui.snapshots import exibir_snapshots
+                if not bool(st.session_state.get("is_superadmin")):
+                    st.error("Acesso restrito.")
+                elif supabase_admin is None:
+                    st.error("Supabase admin não inicializado (SERVICE ROLE).")
+                else:
+                    exibir_snapshots(supabase_admin)
+            else:
+                # fallback
+                st.session_state.current_page = "home"
                 st.rerun()
-            if st.button("Ficha do Material", use_container_width=True):
-                st.session_state["pedido_selecionado"] = _to_str(r.get("id") or "")
-                st.session_state["current_page"] = "material_sheet"
-                st.rerun()
-            if st.button("Copiar OC/SOL", use_container_width=True):
-                st.code(f"OC: {_to_str(r.get('nr_oc'))} | SOL: {_to_str(r.get('nr_solicitacao'))}")
+
+    except Exception as e:
+        usuario = st.session_state.get("usuario") or {}
+        obs.log_exception(
+            e,
+            event="page_render_error",
+            context={
+                "page": pagina,
+                "tenant_id": st.session_state.get("tenant_id"),
+                "user_id": usuario.get("id"),
+                "email": usuario.get("email"),
+            },
+            supabase_admin=supabase_admin,
+        )
+        st.error("Ocorreu um erro ao renderizar esta página. O evento foi registrado em Observabilidade.")
+        st.exception(e)
+
+    # ===== Rodapé da sidebar: sempre depois dos filtros =====
+    with st.sidebar:
+        _sidebar_footer(supabase)
+
+
+if __name__ == "__main__":
+    main()
+
+
+st.markdown('''
+<style>
+.fu-compact-nav .fu-ico .fu-glyph{
+  font-size: 20px;
+  line-height: 1;
+  color: rgba(255,255,255,0.92);
+  transition: color 120ms ease;
+}
+
+.fu-compact-nav .fu-ico:hover .fu-glyph{
+  color: rgba(239,68,68,0.95);
+}
+
+.fu-compact-nav .fu-ico.fu-ico--active{
+  border-color: rgba(239,68,68,0.55);
+  background: rgba(239,68,68,0.95);
+  box-shadow: 0 12px 24px rgba(239,68,68,0.18);
+}
+
+.fu-compact-nav .fu-ico.fu-ico--active .fu-glyph{
+  color: #ffffff;
+}
+</style>
+''', unsafe_allow_html=True)
