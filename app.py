@@ -713,7 +713,22 @@ def _industrial_sidebar_css() -> None:
                 opacity: .9;
             }
         
-            /* ===== Menu Operações / Gestão (botões SaaS) ===== */
+            
+
+/* Chips (filtros ativos) */
+.fu-chips{ display:flex; flex-wrap:wrap; gap:8px; margin: 6px 0 10px 0; }
+.fu-chip{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:6px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.86);
+    font-size: 12px;
+    line-height: 1.1;
+    white-space: nowrap;
+}
+.fu-chip--danger{ border-color: rgba(239,68,68,0.35); background: rgba(239,68,68,0.10); }/* ===== Menu Operações / Gestão (botões SaaS) ===== */
             .fu-nav details{
                 background: rgba(255,255,255,0.03);
                 border: 1px solid rgba(255,255,255,0.07);
