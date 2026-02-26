@@ -405,37 +405,54 @@ def _fu_inject_global_css(sidebar_hidden: bool) -> None:
           background: rgba(239,68,68,0.95) !important;
         }
 
-        /* Sidebar fixa (sem resize/handle) */
+        /* Sidebar fixa (Streamlit 1.37 / Cloud): trava largura e remove resize */
         section[data-testid="stSidebar"]{
-          width: 280px !important;
-          min-width: 280px !important;
-          max-width: 280px !important;
+          width: 300px !important;
+          min-width: 300px !important;
+          max-width: 300px !important;
+          flex: 0 0 300px !important;
           overflow: hidden;
           contain: layout paint style;
           will-change: auto;
           backface-visibility: hidden;
           transform: translateZ(0);
         }
-
-        /* Remove completamente o handle/resizer do Streamlit */
-        div[data-testid="stSidebarResizeHandle"],
-        div[data-testid="stSidebarResizer"],
-        div[data-testid="stSidebarResizeHandle"] *,
-        div[data-testid="stSidebarResizer"] *{
-          display: none !important;
-          visibility: hidden !important;
-          width: 0 !important;
+        section[data-testid="stSidebar"] > div{
+          width: 300px !important;
+          min-width: 300px !important;
+          max-width: 300px !important;
         }
 
-        /* Mobile: sidebar vira overlay full-width (padrão Streamlit) */
+        /* Remove completamente o resizer/handle */
+        div[data-testid="stSidebarResizeHandle"],
+        div[data-testid="stSidebarResizer"]{
+          display: none !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+          width: 0 !important;
+          max-width: 0 !important;
+        }
+
+        /* Mobile: sidebar overlay ocupa a tela */
         @media (max-width: 900px){
           section[data-testid="stSidebar"]{
             width: 100% !important;
             min-width: 100% !important;
             max-width: 100% !important;
+            flex: 0 0 100% !important;
+          }
+          section[data-testid="stSidebar"] > div{
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
           }
         }
-/* Conta: botões full-width e alinhados */
+
+        @media (prefers-reduced-motion: reduce){
+          section[data-testid="stSidebar"]{ transition: none !important; }
+        }
+
+        /* Conta: botões full-width e alinhados */
         section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton > button{
           width: 100% !important;
           height: 44px !important;
