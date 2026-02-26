@@ -339,28 +339,21 @@ def exibir_dashboard(_supabase):
     if st.session_state.get("dash_only_pending", True):
         chips.append("Somente pendentes")
 
-    
-last_gen = st.session_state.get("dash_last_generated")
-
-# Header compacto: chips à esquerda + atualizar à direita (menos poluição)
-if chips or last_gen:
-    top_l, top_r = rcols([4, 1])
-    with top_l:
-        if chips:
-            chips_html = "".join(
-                f'<span class="fu-chip{" fu-chip--danger" if ("Crítico" in c or "crit" in c.lower()) else ""}">{c}</span>'
-                for c in chips
-            )
-            st.markdown(f'<div class="fu-chips">{chips_html}</div>', unsafe_allow_html=True)
-    with top_r:
-        if st.button("🔄 Atualizar", use_container_width=True, key="dash_refresh_data"):
-            st.session_state.pop("dash_pedidos_cache", None)
-            st.session_state.pop("dash_df_view", None)
-            st.session_state["dash_df_view_ready"] = False
-            st.session_state["_dash_memo"] = {}
-            st.rerun()
-    if last_gen:
-        st.caption(f"Atualizado: {last_gen}")
+    last_gen = st.session_state.get("dash_last_generated")
+    if chips or last_gen:
+        left, right = rcols([3, 1])
+        with left:
+            if chips:
+                st.caption(" • ".join(chips))
+        with right:
+            if st.button("Atualizar dados", use_container_width=True, key="dash_refresh_data"):
+                st.session_state.pop("dash_pedidos_cache", None)
+                st.session_state.pop("dash_df_view", None)
+                st.session_state["dash_df_view_ready"] = False
+                st.session_state["_dash_memo"] = {}
+                st.rerun()
+            if last_gen:
+                st.caption(f"Atualizado: {last_gen}")
 
     # =========================
     # KPIs (compacto + drilldown)
@@ -440,7 +433,7 @@ if chips or last_gen:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Detalhes (só se o usuário abrir)
-    with st.expander("Detalhes (totais e entregues)", expanded=False):
+    with st.expander("Detalhes", expanded=False):
         d1, d2, d3, d4 = rcols(4)
         with d1:
             st.metric("Total", formatar_numero_br(total_pedidos).split(",")[0])
