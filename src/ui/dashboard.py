@@ -1,968 +1,1112 @@
-"""Tela: Dashboard."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
-import time
+import math
+import io
+import re
+import datetime
 
 import pandas as pd
-import plotly.express as px
-from src.ui.plotly_style import style_plotly, add_bar_labels, ACCENT_COLOR
-import plotly.graph_objects as go
 import streamlit as st
 
-try:
-    from streamlit_plotly_events import plotly_events  # type: ignore
-except Exception:  # pragma: no cover
-    plotly_events = None  # type: ignore
-
 from src.ui import ux
-from src.ui.responsive import rcols, is_mobile
 
-import src.services.dashboard_avancado as da
-import src.services.filtros_avancados as fa
-import src.services.backup_auditoria as ba
+# Repositórios (mantém compatibilidade com a estrutura do projeto)
+try:
+    from src.repositories.pedidos import carregar_pedidos
+except Exception:  # pragma: no cover
+    carregar_pedidos = None  # type: ignore
 
-from src.repositories.pedidos import carregar_pedidos, carregar_estatisticas_departamento
-from src.repositories.fornecedores import carregar_fornecedores
-from src.utils.formatting import formatar_moeda_br, formatar_numero_br
-from src.ui.theme import apply_theme, section_header, kpi_row
-
-
-def _memo(name: str, key: str, compute_fn):
-    """Cache leve em memória (session_state) para evitar recomputações em reruns.
-
-    Evita problemas de hash com objetos (supabase client, dfs grandes) e ainda
-    melhora bastante a performance percebida.
-    """
-    bucket = st.session_state.setdefault("_dash_memo", {})
-    sk = f"{name}:{key}"
-    if sk in bucket:
-        return bucket[sk]
-    val = compute_fn()
-    bucket[sk] = val
-    return val
+try:
+    from src.repositories.pedidos import atualizar_status_pedido  # type: ignore
+except Exception:  # pragma: no cover
+    atualizar_status_pedido = None  # type: ignore
 
 
-def _fig_memo(name: str, key: str, build_fn):
-    """Memoização para figuras Plotly.
+def _get_cached_pedidos(_supabase, tenant_id: str | None):
+    """Cache leve em session_state para evitar refetch a cada rerun."""
+    st.session_state.setdefault("_cache_pedidos", {})
+    key = str(tenant_id or "default")
+    entry = st.session_state["_cache_pedidos"].get(key)
+    if entry and isinstance(entry, dict) and "df" in entry and "ts" in entry:
+        # TTL 60s
+        if (datetime.datetime.now().timestamp() - float(entry["ts"])) < 60:
+            return entry["df"]
+    df = carregar_pedidos(_supabase, tenant_id)  # type: ignore[misc]
+    st.session_state["_cache_pedidos"][key] = {"df": df, "ts": datetime.datetime.now().timestamp()}
+    return df
 
-    Criar figuras (especialmente com labels) custa caro e deixa o app "pesado"
-    quando acontece rerun por scroll/expanders. Guardar a figura pronta deixa
-    esses reruns praticamente instantâneos.
-    """
-    return _memo(f"fig:{name}", key, build_fn)
+def _clear_cached_pedidos(tenant_id: str | None):
+    st.session_state.setdefault("_cache_pedidos", {})
+    key = str(tenant_id or "default")
+    st.session_state["_cache_pedidos"].pop(key, None)
+
+
+
+
+# Compat: st.popover existe só em versões mais novas do Streamlit.
+# Este helper usa popover quando disponível e cai para expander quando não.
+def _popover_or_expander(label: str, *, use_container_width: bool = True):
+    if hasattr(st, "popover"):
+        return st.popover(label, use_container_width=use_container_width)  # type: ignore[attr-defined]
+    return st.expander(label, expanded=False)
+
+
+def _to_str(x) -> str:
+    """Converte valores para string sem 'nan/None'."""
+    try:
+        import pandas as pd
+        if x is None or (isinstance(x, float) and pd.isna(x)) or pd.isna(x):
+            return ""
+    except Exception:
+        if x is None:
+            return ""
+    return str(x)
+
+def _badge_status(s: str) -> str:
+    """Prefixa status com indicador visual (emoji)."""
+    s = "" if s is None else str(s)
+    s0 = s.strip().lower()
+
+    if s0 in ["entregue", "entregues", "finalizado", "concluído", "concluido", "encerrado"]:
+        return f"🟢 {s}"
+    if s0 in ["tem oc", "com oc"]:
+        return f"🟢 {s}"
+    if s0 in ["em transporte", "transporte"]:
+        return f"🟠 {s}"
+    if s0 in ["sem oc", "sem pedido", "sem oc/sol", "sem oc/solicitação"]:
+        return f"🔵 {s}"
+    if s0 in ["atrasado", "vencido", "em atraso", "crítico", "critico"]:
+        return f"🔴 {s}"
+    if s0 in ["em aberto", "aberto", "pendente", "em andamento"]:
+        return f"🟡 {s}"
+
+    return f"⚪ {s}"
+
 
 def _dt_series(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series([pd.NaT] * len(df), index=df.index)
     return pd.to_datetime(df[col], errors="coerce")
 
+
 def _compute_due_dates(df: pd.DataFrame) -> pd.Series:
-    # Regra alinhada com src.services.sistema_alertas: previsao_entrega > prazo_entrega > data_oc + 30 dias
+    """Calcula a data 'due' com a mesma regra do Dashboard/Alertas.
+
+    previsao_entrega > prazo_entrega > data_oc + 30 dias
+    """
     prev = _dt_series(df, "previsao_entrega")
     prazo = _dt_series(df, "prazo_entrega")
     data_oc = _dt_series(df, "data_oc")
     fallback = data_oc + pd.to_timedelta(30, unit="D")
-    due = prev.fillna(prazo).fillna(fallback)
-    return due
-
-def _normalize_bool_series(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+    return prev.fillna(prazo).fillna(fallback)
 
 
+def _status_pill(status: str) -> str:
+    """Badge HTML (cor real) para usar em st.markdown(unsafe_allow_html=True)."""
+    s = "" if status is None else str(status).strip()
+    s0 = s.lower()
 
+    # cores (ajuste se necessário)
+    if s0 in ["entregue", "entregues", "finalizado", "concluído", "concluido", "encerrado"]:
+        bg, fg = "#103B1A", "#CFF7D6"  # verde
+        dot = "🟢"
+    elif s0 in ["em aberto", "aberto", "pendente", "em andamento", "em transporte", "transporte"]:
+        bg, fg = "#3A2D0A", "#FFE6A7"  # amarelo
+        dot = "🟡" if "transporte" not in s0 else "🟠"
+    elif s0 in ["atrasado", "vencido", "em atraso", "crítico", "critico"]:
+        bg, fg = "#3A1010", "#FFD0D0"  # vermelho
+        dot = "🔴"
+    elif s0 in ["sem oc", "sem pedido", "sem oc/sol", "sem oc/solicitação"]:
+        bg, fg = "#1D2330", "#D7E3FF"  # azul/cinza
+        dot = "🔵"
+    else:
+        bg, fg = "#22242A", "#E6E6E6"
+        dot = "⚪"
 
-
-def _drill_to_consulta(*, dept: str | None = None, uf: str | None = None) -> None:
-    """Navega para Consulta e pré-aplica filtros via session_state."""
-    st.session_state.current_page = "orders_search"
-    st.session_state["_force_menu_sync"] = True
-
-    if dept:
-        st.session_state["c_deptos"] = [str(dept).strip()]
-    if uf:
-        st.session_state["c_uf"] = [str(uf).strip().upper()]
-
-    st.session_state["consulta_quick"] = True
-    st.rerun()
-
-def _apply_dashboard_filters(df: pd.DataFrame) -> pd.DataFrame:
-    """Filtros globais (um único lugar) + botão 'Gerar dashboard'.
-
-    - Mantém os filtros em session_state
-    - Só recalcula/atualiza df_view quando o usuário clica em 'Gerar'
-    """
-    # defaults
-    if "dash_filters_applied" not in st.session_state:
-        st.session_state.dash_filters_applied = False
-
-    # Form recolhível para não poluir
-    expanded = bool(st.session_state.get("dash_filters_expanded", not st.session_state.get("dash_filters_applied", False)))
-    with st.expander("Filtros do Dashboard", expanded=expanded):
-        with st.form("dash_filters_form", clear_on_submit=False):
-            mobile = bool(st.session_state.get("mobile_mode", False))
-
-            if mobile:
-                # Layout mobile: filtros empilhados (mais legível em telas pequenas)
-                periodo = st.selectbox(
-                    "Período",
-                    ["30 dias", "60 dias", "90 dias", "Tudo"],
-                    index=0,
-                    key="dash_periodo",
-                )
-
-                deptos = (
-                    df.get("departamento", pd.Series(dtype=str))
-                    .dropna().astype(str).str.strip()
-                )
-                deptos = sorted([d for d in deptos.unique().tolist() if d])
-                dept_sel = st.multiselect("Departamento", deptos, default=st.session_state.get("dash_dept", []), key="dash_dept")
-
-                uf_series = (
-                    df.get("fornecedor_uf", pd.Series(dtype=str))
-                    .dropna()
-                    .astype(str)
-                    .str.strip()
-                    .str.upper()
-                )
-                uf_counts = uf_series.value_counts()
-                uf_sorted = uf_counts.index.tolist()
-                uf_label = {uf: f"{uf} ({int(uf_counts[uf])} pedidos)" for uf in uf_sorted}
-                options = [uf_label[uf] for uf in uf_sorted]
-                default_ufs = st.session_state.get("dash_uf", [])
-                default_labels = [uf_label[u] for u in default_ufs if u in uf_label]
-                sel_labels = st.multiselect(
-                    "Estado (UF)",
-                    options,
-                    default=default_labels,
-                    key="dash_uf_labels",
-                )
-                uf_sel = [s.split(" ", 1)[0].strip().upper() for s in (sel_labels or []) if isinstance(s, str) and s.strip()]
-                st.session_state["dash_uf"] = uf_sel
-
-                status = df.get("status", pd.Series(dtype=str)).dropna().astype(str).str.strip()
-                status = sorted([s for s in status.unique().tolist() if s])
-                status_sel = st.multiselect("Status", status, default=st.session_state.get("dash_status", []), key="dash_status")
-
-                somente_pendentes = st.toggle("Somente pendentes", value=st.session_state.get("dash_only_pending", True), key="dash_only_pending")
-
-            else:
-                c1, c2, c3, c4, c5 = rcols([1.2, 1.6, 1.6, 1.2, 1.2])
-
-                # Período
-                with c1:
-                    periodo = st.selectbox(
-                        "Período",
-                        ["30 dias", "60 dias", "90 dias", "Tudo"],
-                        index=0,
-                        key="dash_periodo",
-                    )
-
-                # Departamento
-                with c2:
-                    deptos = (
-                        df.get("departamento", pd.Series(dtype=str))
-                        .dropna().astype(str).str.strip()
-                    )
-                    deptos = sorted([d for d in deptos.unique().tolist() if d])
-                    dept_sel = st.multiselect("Departamento", deptos, default=st.session_state.get("dash_dept", []), key="dash_dept")
-                # Estado (UF)
-                with c3:
-                    uf_series = (
-                        df.get("fornecedor_uf", pd.Series(dtype=str))
-                        .dropna()
-                        .astype(str)
-                        .str.strip()
-                        .str.upper()
-                    )
-                    # Contagem por UF para exibir "SP (120 pedidos)" e ordenar por quantidade
-                    uf_counts = uf_series.value_counts()
-                    uf_sorted = uf_counts.index.tolist()  # já vem ordenado desc
-                    uf_label = {uf: f"{uf} ({int(uf_counts[uf])} pedidos)" for uf in uf_sorted}
-
-                    options = [uf_label[uf] for uf in uf_sorted]
-                    # default guarda os códigos (["SP","MG"...]) para não quebrar se a contagem mudar
-                    default_ufs = st.session_state.get("dash_uf", [])
-                    default_labels = [uf_label[u] for u in default_ufs if u in uf_label]
-
-                    sel_labels = st.multiselect(
-                        "Estado (UF)",
-                        options,
-                        default=default_labels,
-                        key="dash_uf_labels",
-                    )
-
-                    # Converter labels selecionados de volta para UF (antes do primeiro espaço)
-                    uf_sel = [s.split(" ", 1)[0].strip().upper() for s in (sel_labels or []) if isinstance(s, str) and s.strip()]
-                    st.session_state["dash_uf"] = uf_sel
-
-                # Status + pendentes
-                with c4:
-                    status = df.get("status", pd.Series(dtype=str)).dropna().astype(str).str.strip()
-                    status = sorted([s for s in status.unique().tolist() if s])
-                    status_sel = st.multiselect("Status", status, default=st.session_state.get("dash_status", []), key="dash_status")
-
-                with c5:
-                    somente_pendentes = st.toggle("Somente pendentes", value=st.session_state.get("dash_only_pending", True), key="dash_only_pending")
-
-            # Botões
-            b1, b2 = rcols([1, 1])
-            with b1:
-                gerar = st.form_submit_button("Gerar dashboard", use_container_width=True)
-            with b2:
-                limpar = st.form_submit_button("Limpar filtros", use_container_width=True)
-
-    # Limpar filtros
-    if limpar:
-        for k in ["dash_periodo", "dash_dept", "dash_uf", "dash_uf_labels", "dash_status", "dash_only_pending"]:
-            if k in st.session_state:
-                del st.session_state[k]
-        st.session_state.dash_filters_applied = False
-        st.session_state.pop("dash_df_view", None)
-        st.session_state["dash_df_view_ready"] = False
-        st.session_state["_dash_memo"] = {}
-        st.rerun()
-
-    # Se nunca aplicou e não clicou gerar, mostra vazio (UX: força intenção)
-    if not st.session_state.dash_filters_applied and not gerar:
-        ux.info("Selecione os filtros e clique em **Gerar dashboard** para calcular os indicadores e gráficos.")
-        return df.iloc[0:0].copy()
-
-    # Aplicar (quando clicar Gerar, ou se já aplicado antes)
-    if gerar or not st.session_state.get("dash_df_view_ready", False):
-        # Feedback leve (sem sleeps artificiais)
-        if gerar:
-            st.toast("Gerando dashboard…", icon="⏳")
-
-        with st.spinner("Aplicando filtros…"):
-            out = df.copy()
-
-            # Aplicar período com base em data_oc (se existir) senão previsao_entrega
-            base_dt = _dt_series(out, "data_oc")
-            if base_dt.isna().all():
-                base_dt = _dt_series(out, "previsao_entrega")
-            if not base_dt.isna().all() and st.session_state.get("dash_periodo", "30 dias") != "Tudo":
-                dias = int(str(st.session_state.get("dash_periodo", "30 dias")).split()[0])
-                ini = pd.Timestamp.now().normalize() - pd.Timedelta(days=dias)
-                out = out.loc[base_dt >= ini]
-            dept_sel = st.session_state.get("dash_dept", [])
-            uf_sel = st.session_state.get("dash_uf", [])
-            status_sel = st.session_state.get("dash_status", [])
-            somente_pendentes = st.session_state.get("dash_only_pending", True)
-            if dept_sel and "departamento" in out.columns:
-                out = out[out["departamento"].astype(str).str.strip().isin(dept_sel)]
-            if uf_sel and "fornecedor_uf" in out.columns:
-                out = out[out["fornecedor_uf"].astype(str).str.strip().str.upper().isin(uf_sel)]
-            if status_sel and "status" in out.columns:
-                out = out[out["status"].astype(str).str.strip().isin(status_sel)]
-
-            if somente_pendentes and "entregue" in out.columns:
-                entregue = _normalize_bool_series(out["entregue"])
-                out = out[~entregue]
-            if gerar:
-                st.toast("Dashboard atualizado ✅", icon="✅")
-
-        st.session_state["dash_df_view"] = out
-        st.session_state.dash_filters_applied = True
-        st.session_state["dash_df_view_ready"] = True
-        st.session_state["dash_last_generated"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        st.session_state["dash_filters_expanded"] = False
-
-    return st.session_state.get("dash_df_view", df)
-
-
-def exibir_dashboard(_supabase):
-    """Exibe dashboard principal com KPIs e gráficos"""
-
-    apply_theme()
-
-    # Config padrão de renderização Plotly (pode ser sobrescrito por toggles no dashboard)
-    turbo_global = bool(st.session_state.get("dash_turbo", True))
-    fast_global = bool(st.session_state.get("dash_fast_charts", True))
-    plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": (turbo_global or fast_global)}
-
-    tenant_id = st.session_state.get("tenant_id")
-    section_header(
-        "Dashboard",
-        hint="Follow-up de pedidos, prazos e gastos.",
-        pill=None,
-        accent=True,
+    return (
+        f"<span style='display:inline-flex;align-items:center;gap:.35rem;"
+        f"padding:.2rem .55rem;border-radius:999px;background:{bg};color:{fg};"
+        f"border:1px solid rgba(255,255,255,.08);font-size:.85rem;'>"
+        f"<span style='font-size:.85rem'>{dot}</span><span>{s}</span></span>"
     )
 
-    # Contexto técnico (evita poluir o header)
-    if tenant_id:
-        with st.expander("Contexto técnico", expanded=False):
-            st.code(f"Tenant: {tenant_id}")
-    
-    # Carregar dados (cache curto para evitar consultas repetidas em reruns)
-    ttl_s = 120
-    cache = st.session_state.get("dash_pedidos_cache")
-    now_ts = time.time()
-    if isinstance(cache, dict) and (now_ts - float(cache.get("ts", 0))) < ttl_s:
-        df_export = cache.get("df", pd.DataFrame()).copy()
+
+
+
+def _status_html(status: str) -> str:
+    """Retorna um pill HTML com cor (para usar com unsafe_allow_html=True)."""
+    s = "" if status is None else str(status).strip()
+    s0 = s.lower()
+
+    if s0 in ["entregue", "entregues", "finalizado", "concluído", "concluido", "encerrado"]:
+        cls = "st-pill st-pill-green"
+    elif s0 in ["atrasado", "vencido", "em atraso", "crítico", "critico"]:
+        cls = "st-pill st-pill-red"
+    elif s0 in ["em transporte", "transporte"]:
+        cls = "st-pill st-pill-orange"
+    elif s0 in ["sem oc", "sem pedido", "sem oc/sol", "sem oc/solicitação"]:
+        cls = "st-pill st-pill-blue"
+    elif s0 in ["em aberto", "aberto", "pendente", "em andamento"]:
+        cls = "st-pill st-pill-yellow"
     else:
-        with st.spinner("Carregando pedidos…"):
-            df_export = carregar_pedidos(_supabase, tenant_id)
-        st.session_state["dash_pedidos_cache"] = {"ts": now_ts, "df": df_export.copy()}
-    
-    if df_export.empty:
-        ux.info("📭 Nenhum pedido cadastrado ainda")
-        return
-    
-    # Botão de diagnóstico (temporário para debug) - COMENTADO
-    # if st.button("🔍 Diagnosticar Problema de Datas"):
-    #     diagnostico_datas.diagnosticar_datas(df_export)
+        cls = "st-pill st-pill-neutral"
 
-    
-    # Aplicar filtros globais do dashboard
-    df_view = _apply_dashboard_filters(df_export)
+    return f"<span class='{cls}'>{s or '—'}</span>"
 
-    if df_view.empty:
-        ux.info("Nenhum pedido encontrado com os filtros atuais.")
-        return
 
-    # Chips de contexto (filtros ativos + última atualização)
-    chips = []
-    periodo = st.session_state.get("dash_periodo")
-    if periodo and periodo != "Tudo":
-        chips.append(f"Período: {periodo}")
-    dept = st.session_state.get("dash_dept", [])
-    if dept:
-        chips.append(f"Depto: {', '.join(dept[:2])}{'…' if len(dept) > 2 else ''}")
-    uf = st.session_state.get("dash_uf", [])
-    if uf:
-        chips.append(f"UF: {', '.join(uf)}")
-    status = st.session_state.get("dash_status", [])
-    if status:
-        chips.append(f"Status: {', '.join(status[:2])}{'…' if len(status) > 2 else ''}")
-    if st.session_state.get("dash_only_pending", True):
-        chips.append("Somente pendentes")
 
-    last_gen = st.session_state.get("dash_last_generated")
-    if chips or last_gen:
-        left, right = rcols([3, 1])
-        with left:
-            if chips:
-                st.caption(" • ".join(chips))
-        with right:
-            if st.button("Atualizar dados", use_container_width=True, key="dash_refresh_data"):
-                st.session_state.pop("dash_pedidos_cache", None)
-                st.session_state.pop("dash_df_view", None)
-                st.session_state["dash_df_view_ready"] = False
-                st.session_state["_dash_memo"] = {}
-                st.rerun()
-            if last_gen:
-                st.caption(f"Atualizado: {last_gen}")
+def _render_lista_erp_com_olho(page: pd.DataFrame, show_cols: list[str]) -> str | None:
+    """Renderiza uma lista estilo ERP com botão 👁️ por linha (seleção única, intuitiva).
+    Retorna o pid (id) quando o usuário clicar em 👁️, senão None.
+    """
+    if "id" not in page.columns:
+        return None
 
-    # =========================
-    # KPIs (compacto + drilldown)
-    # =========================
-    hoje = pd.Timestamp.now().normalize()
+    # CSS local: evita que descrições longas "invadam" outras colunas
+    st.markdown(
+        """
+        <style>
 
-    # Normalizações
-    if "entregue" in df_view.columns:
-        df_view["_entregue"] = _normalize_bool_series(df_view["entregue"])
+          .fu-erp-list [data-testid="column"]{ min-width: 0 !important; }
+          .fu-erp-list [data-testid="stHorizontalBlock"]{ gap: 0.5rem !important; }
+          .fu-erp-list div[data-testid="stButton"]{ width: 100% !important; }
+          .fu-erp-list div[data-testid="stButton"] > button{
+            max-width: 100% !important;
+            display: block !important;
+          }
+          .fu-erp-list div[data-testid="stButton"] > button *{
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+            max-width: 100% !important;
+          }
+
+          .fu-erp-list div[data-testid="stButton"] > button{
+            width: 100% !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+            min-height: 38px !important;
+          }
+          .fu-erp-list [data-testid="stButton"]{ margin-bottom: 0 !important; }
+          .fu-erp-list .fu-erp-sep hr{ margin: 6px 0 !important; opacity: .25; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="fu-erp-list">', unsafe_allow_html=True)
+
+
+    mobile = bool(st.session_state.get("mobile_mode", False))
+
+    # Cabeçalho (desktop)
+    if not mobile:
+        header_cols = st.columns([0.6, 1.4, 3.6, 1.2, 1.1, 1.2, 1.2])
+        header_cols[0].markdown("**Ver**")
+        header_cols[1].markdown("**Equip.**")
+        header_cols[2].markdown("**Descrição**")
+        header_cols[3].markdown("**OC / SOL**")
+        header_cols[4].markdown("**Depto**")
+        header_cols[5].markdown("**Status**")
+        header_cols[6].markdown("**Valor**")
+        st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+
     else:
-        df_view["_entregue"] = False
+        st.caption("Toque em 👁️ para abrir as ações do pedido.")
+        st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
 
-    if "atrasado" in df_view.columns:
-        df_view["_atrasado"] = _normalize_bool_series(df_view["atrasado"])
-    else:
-        df_view["_atrasado"] = False
+    for i, r in page.reset_index(drop=False).iterrows():
+        # r contém a coluna "index" do df original (drop=False) — útil se precisar
+        pid = str(r.get("id"))
 
-    df_view["_due"] = _compute_due_dates(df_view)
-    df_view["_valor"] = pd.to_numeric(df_view.get("valor_total", 0), errors="coerce").fillna(0.0)
+        cod_eq = _to_str(r.get("cod_equipamento"))
+        desc = _to_str(r.get("descricao"))
+        oc = _to_str(r.get("nr_oc"))
+        sol = _to_str(r.get("nr_solicitacao"))
+        depto = _to_str(r.get("departamento"))
+        status_txt = _badge_status(_to_str(r.get("status")))
 
-    pendentes = df_view[~df_view["_entregue"]].copy()
+        # valor
+        val = r.get("valor_total")
+        try:
+            val_f = float(val) if val not in (None, "") else 0.0
+            val_str = f"R$ {val_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            val_str = _to_str(val)
 
-    # Vencendo: até 3 dias (mesma regra do sistema de alertas)
-    data_limite = hoje + pd.Timedelta(days=3)
-    vencendo = pendentes[pendentes["_due"].notna() & (pendentes["_due"] >= hoje) & (pendentes["_due"] <= data_limite)]
+        if mobile:
+            # Card compacto (mobile)
+            top = st.columns([0.82, 0.18])
+            with top[0]:
+                desc_full = str(desc or "").replace("\n", " ").replace("\r", " ").strip()
+                desc_full = re.sub(r"\s+", " ", desc_full)
+                st.markdown(f"**{(desc_full or '—')}**")
+                st.caption(f"Equip.: {cod_eq or '—'}  •  OC/SOL: {oc or '—'} / {sol or '—'}")
+                st.caption(f"Depto: {depto or '—'}  •  {val_str or '—'}")
+                st.markdown(_status_html(_to_str(r.get('status'))), unsafe_allow_html=True)
+            with top[1]:
+                if st.button("👁️", key=f"see_{pid}", help="Abrir ações deste pedido", use_container_width=True):
+                    return pid
+            st.markdown('<div class="fu-erp-sep"><hr></div>', unsafe_allow_html=True)
 
-    # Atrasados: due < hoje (ou flag atrasado)
-    atrasados = pendentes[
-        (pendentes["_atrasado"]) |
-        (pendentes["_due"].notna() & (pendentes["_due"] < hoje))
-    ]
+        else:
+            c = st.columns([0.6, 1.4, 3.6, 1.2, 1.1, 1.2, 1.2])
 
-    # Críticos: alto valor (>= P75) + vencendo (<= 3 dias)
-    if len(pendentes) >= 4:
-        valor_critico = float(pendentes["_valor"].quantile(0.75))
-    else:
-        valor_critico = float(pendentes["_valor"].max() if len(pendentes) else 0.0)
-    criticos = vencendo[vencendo["_valor"] >= valor_critico]
+            with c[0]:
+                if st.button("👁️", key=f"see_{pid}", help="Abrir ações deste pedido", use_container_width=True):
+                    return pid
 
-    total_pedidos = len(df_view)
-    pedidos_entregues = int(df_view["_entregue"].sum())
-    pedidos_pendentes = int((~df_view["_entregue"]).sum())
-    pedidos_atrasados = len(atrasados)
-    pedidos_vencendo = len(vencendo)
-    pedidos_criticos = len(criticos)
+            with c[1]:
+                st.caption(cod_eq or "—")
 
-    valor_total = float(df_view["_valor"].sum())
-    valor_em_risco = float(atrasados["_valor"].sum() + vencendo["_valor"].sum())
+            with c[2]:
+                # descrição (curta) + botão de info (abre modal com texto completo)
+                desc = str(desc or "").replace("\n", " ").replace("\r", " ").strip()
+                desc = re.sub(r"\s+", " ", desc)
 
-    # KPIs clicáveis (menos poluição: o próprio KPI vira ação)
-    st.markdown('<div class="fu-kpi-main-click">', unsafe_allow_html=True)
-    c1, c2, c3, c4 = rcols(4)
-    with c1:
-        if st.button(f"Pendentes\n{formatar_numero_br(pedidos_pendentes).split(',')[0]}", use_container_width=True, key="dash_kpi_pendentes"):
-            st.session_state["consulta_nav_mode"] = "pendentes"
-            st.session_state.current_page = "orders_search"
-            st.session_state["_force_menu_sync"] = True
-            st.rerun()
-    with c2:
-        if st.button(f"Atrasados\n{formatar_numero_br(pedidos_atrasados).split(',')[0]}", use_container_width=True, key="dash_kpi_atrasados"):
-            st.session_state["consulta_nav_mode"] = "atrasados"
-            st.session_state.current_page = "orders_search"
-            st.session_state["_force_menu_sync"] = True
-            st.rerun()
-    with c3:
-        if st.button(f"Vencendo (≤3d)\n{formatar_numero_br(pedidos_vencendo).split(',')[0]}", use_container_width=True, key="dash_kpi_vencendo"):
-            st.session_state["consulta_nav_mode"] = "vencendo"
-            st.session_state.current_page = "orders_search"
-            st.session_state["_force_menu_sync"] = True
-            st.rerun()
-    with c4:
-        if st.button(f"Valor em risco\n{formatar_moeda_br(valor_em_risco)}", use_container_width=True, key="dash_kpi_risco"):
-            st.session_state["consulta_nav_mode"] = "risco"
-            st.session_state.current_page = "orders_search"
-            st.session_state["_force_menu_sync"] = True
-            st.rerun()
+                MAX_DESC = 55  # limita visual para não invadir outras colunas
+                short = (desc[: MAX_DESC - 1] + "…") if len(desc) > MAX_DESC else desc
+                label = short or "—"
+                if st.button(label, key=f"row_{pid}", help="Abrir ações deste pedido", use_container_width=True):
+                    return pid
+
+            with c[3]:
+                st.caption(f"{oc or '—'} / {sol or '—'}")
+
+            with c[4]:
+                st.caption(depto or "—")
+
+            with c[5]:
+                st.markdown(_status_html(_to_str(r.get('status'))), unsafe_allow_html=True)
+
+            with c[6]:
+                st.caption(val_str or "—")
+
+            st.markdown('<div class="fu-erp-sep"><hr></div>', unsafe_allow_html=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
+    return None
 
-    # Detalhes (só se o usuário abrir)
-    with st.expander("Detalhes", expanded=False):
-        d1, d2, d3, d4 = rcols(4)
-        with d1:
-            st.metric("Total", formatar_numero_br(total_pedidos).split(",")[0])
-        with d2:
-            taxa_entrega = (pedidos_entregues / total_pedidos * 100) if total_pedidos > 0 else 0.0
-            st.metric("Entregues", formatar_numero_br(pedidos_entregues).split(",")[0], delta=f"{taxa_entrega:.1f}%".replace(".", ","))
-        with d3:
-            st.metric("Críticos", formatar_numero_br(pedidos_criticos).split(",")[0], delta_color="inverse" if pedidos_criticos > 0 else "normal")
-        with d4:
-            st.metric("Valor total", formatar_moeda_br(valor_total))
 
-    st.markdown("---")
-    
-    # Abas para diferentes visualizações
-    # Abas controláveis (permite manter aba selecionada via session_state)
-    _tabs = ["Visão Geral", "Dashboard Avançado"]
-    _default_idx = 0
+def _render_tabela_selecao_unica(page: pd.DataFrame, show_cols: list[str]) -> str | None:
+    """Compat: mantém assinatura antiga, mas renderiza lista ERP com botão 👁️."""
+    return _render_lista_erp_com_olho(page, show_cols)
+def _make_stamp(df: pd.DataFrame, col: str = "atualizado_em") -> tuple:
+    if df is None or df.empty:
+        return (0, "empty")
+    mx = None
+    if col in df.columns:
+        mx = pd.to_datetime(df[col], errors="coerce").max()
+    return (len(df), str(mx) if mx is not None else "none")
 
-    aba = ux.segmented("", _tabs, key="dash_active_tab", default=_tabs[_default_idx])
+@st.cache_data(max_entries=256, ttl=120)
+def _prepare_search(stamp: tuple, df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza tipos e cria coluna de busca (cacheada)."""
+    if df is None or df.empty:
+        return df
 
-    tab1 = (aba == _tabs[0])
-    tab2 = (aba == _tabs[1])
-    if tab1:
-        mobile_now = is_mobile()
+    out = df.copy()
 
-        # =========================
-        # Controles (aplicar visual)
-        # =========================
-        
-        # =========================
-        # Performance: Modo turbo
-        # =========================
-        turbo = st.toggle(
-            "⚡ Modo turbo (mais rápido)",
-            value=bool(st.session_state.get("dash_turbo", True)),
-            help="Reduz custo de renderização (desliga labels em barras e algumas visões secundárias).",
-            key="dash_turbo_toggle",
-        )
-        st.session_state["dash_turbo"] = bool(turbo)
+    cols = []
+    for c in ["nr_oc", "nr_solicitacao", "descricao", "departamento", "fornecedor", "cod_material", "cod_equipamento"]:
+        if c in out.columns:
+            cols.append(out[c].fillna("").astype(str).str.lower())
 
-        fast_charts = st.toggle(
-            "🚀 Gráficos leves (melhor performance)",
-            value=bool(st.session_state.get("dash_fast_charts", True)),
-            help="Desativa interações pesadas e labels em barras quando necessário. Ideal para deixar o scroll/expanders mais fluidos.",
-            key="dash_fast_charts_toggle",
-        )
-        st.session_state["dash_fast_charts"] = bool(fast_charts)
+    if cols:
+        s = cols[0]
+        for x in cols[1:]:
+            s = s + " " + x
+        out["__search__"] = s.str.replace(r"\s+", " ", regex=True).str.strip()
+    else:
+        out["__search__"] = ""
 
-        # Config padrão de renderização Plotly (staticPlot acelera bastante em dashboards densos)
-        plot_config = {"displayModeBar": False, "responsive": True, "staticPlot": bool(turbo)}
-        st.subheader("Resumo acionável")
+    for dc in ["data_solicitacao", "data_oc", "previsao_entrega", "data_entrega"]:
+        if dc in out.columns:
+            out[dc] = pd.to_datetime(out[dc], errors="coerce")
 
-        default_viz = {
-            "compacto": bool(mobile_now) or bool(st.session_state.get("dash_turbo", True)),
-            "show_trend": True,
-            # Em modo turbo, reduzir visões secundárias para ficar mais leve
-            "show_rank": (not bool(st.session_state.get("dash_turbo", True))),
-            "show_aging": (not bool(st.session_state.get("dash_turbo", True))),
-            "show_action": True,
-            "show_details": False,
-            "show_dist": True,
-            "show_scatter": False,
+    for nc in ["qtde_solicitada", "qtde_entregue", "valor_total", "dias_atraso", "qtde_pendente"]:
+        if nc in out.columns:
+            out[nc] = pd.to_numeric(out[nc], errors="coerce")
+
+    return out
+
+def _is_atrasado(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series([], dtype=bool)
+    if "dias_atraso" in df.columns:
+        return pd.to_numeric(df["dias_atraso"], errors="coerce").fillna(0) > 0
+    if "previsao_entrega" in df.columns:
+        hoje = pd.Timestamp.now().normalize()
+        if "status" in df.columns:
+            status_ok = df["status"].fillna("").astype(str) != "Entregue"
+        else:
+            status_ok = True
+        return df["previsao_entrega"].notna() & (df["previsao_entrega"] < hoje) & status_ok
+    return pd.Series([False] * len(df), index=df.index)
+
+def _apply_filters(
+    df: pd.DataFrame,
+    q: str,
+    deptos: list[str],
+    ufs: list[str],
+    status_list: list[str],
+    somente_atrasados: bool,
+    cod_equip: str = "",
+    cod_mat: str = "",
+) -> pd.DataFrame:
+    """Aplica filtros estáveis (multiselect) + busca + atrasados + códigos numéricos."""
+    out = df
+
+    # Navegação vinda do Dashboard (por KPI): restringe a um conjunto de IDs
+    nav_ids = st.session_state.get("consulta_nav_ids")
+    if nav_ids and isinstance(nav_ids, set):
+        try:
+            out = out.loc[out.index.intersection(nav_ids)]
+        except Exception:
+            pass
+
+    if deptos and "departamento" in out.columns:
+        out = out[out["departamento"].isin(deptos)]
+
+    if ufs and "fornecedor_uf" in out.columns:
+        out = out[out["fornecedor_uf"].fillna("").astype(str).str.strip().str.upper().isin([u.strip().upper() for u in ufs])]
+
+    if status_list and "status" in out.columns:
+        out = out[out["status"].isin(status_list)]
+
+    # Código de equipamento (somente números): match exato ou prefixo (tolerante)
+    if cod_equip and "cod_equipamento" in out.columns:
+        ce = str(cod_equip).strip()
+        out = out[out["cod_equipamento"].fillna("").astype(str).str.replace(r"\D", "", regex=True).str.startswith(ce)]
+
+    # Código de material (somente números): match exato ou prefixo (tolerante)
+    if cod_mat and "cod_material" in out.columns:
+        cm = str(cod_mat).strip()
+        out = out[out["cod_material"].fillna("").astype(str).str.replace(r"\D", "", regex=True).str.startswith(cm)]
+
+    if q:
+        qn = q.lower().strip()
+        if "__search__" in out.columns:
+            out = out[out["__search__"].str.contains(qn, na=False)]
+        else:
+            # fallback: busca em colunas texto comuns
+            cols = [c for c in ["descricao", "fornecedor", "nr_oc", "nr_solicitacao", "cod_material", "cod_equipamento"] if c in out.columns]
+            if cols:
+                mask = False
+                for c in cols:
+                    mask = mask | out[c].fillna("").astype(str).str.lower().str.contains(qn)
+                out = out[mask]
+
+    if somente_atrasados:
+        out = out[_is_atrasado(out)]
+
+    # Filtro por janela de vencimento (quando aplicado via KPI)
+    win = st.session_state.get("consulta_due_window")
+    if win in ("vencendo", "risco"):
+        try:
+            entregue = out.get("entregue", pd.Series([False] * len(out))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+            due = _compute_due_dates(out)
+            hoje = pd.Timestamp.now().normalize()
+            limite = hoje + pd.Timedelta(days=3)
+            flag_atrasado = out.get("atrasado", pd.Series([False] * len(out))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+            if win == "vencendo":
+                out = out[(~entregue) & (due.notna() & (due >= hoje) & (due <= limite))]
+            else:  # risco
+                out = out[(~entregue) & (
+                    flag_atrasado | (due.notna() & (due < hoje)) |
+                    (due.notna() & (due >= hoje) & (due <= limite))
+                )]
+        except Exception:
+            pass
+
+    return out
+
+def _download_csv(df: pd.DataFrame, filename: str):
+    csv = df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button("⬇️ CSV", csv, file_name=filename, mime="text/csv", use_container_width=True)
+
+def _download_xlsx(df: pd.DataFrame, filename: str):
+    """Download XLSX without requiring xlsxwriter (fallback to openpyxl)."""
+    output = io.BytesIO()
+    engine = "xlsxwriter"
+    try:
+        __import__("xlsxwriter")
+    except Exception:
+        engine = "openpyxl"
+
+    with pd.ExcelWriter(output, engine=engine) as writer:
+        df.to_excel(writer, index=False, sheet_name="Pedidos")
+
+    st.download_button(
+        "⬇️ XLSX",
+        output.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+def _to_label(row: pd.Series) -> str:
+    nr_oc = str(row.get("nr_oc") or "").strip()
+    nr_sol = str(row.get("nr_solicitacao") or "").strip()
+    dept = str(row.get("departamento") or "").strip()
+    stt = str(row.get("status") or "").strip()
+    desc = str(row.get("descricao") or "").strip().replace("\n", " ")
+    if len(desc) > 70:
+        desc = desc[:70] + "…"
+    return f"OC: {nr_oc or '-'} | SOL: {nr_sol or '-'} | {stt} | {dept} — {desc}"
+
+def _find_pid_by_key(df: pd.DataFrame, key: str) -> str | None:
+    """Localiza um pedido pelo nr_oc ou nr_solicitacao (exato -> parcial)."""
+    if df is None or df.empty or not key:
+        return None
+    k = str(key).strip()
+    if not k:
+        return None
+
+
+def _numeric_autocomplete(label: str, series: pd.Series, key_prefix: str, max_suggestions: int = 30) -> str:
+    """Autocomplete simples para códigos numéricos.
+    - Usuário digita só números (limpamos tudo que não for dígito)
+    - Mostra sugestões (starts/contains)
+    - Retorna valor selecionado (string) ou "".
+    """
+    st.session_state.setdefault(f"{key_prefix}_q", "")
+    st.session_state.setdefault(f"{key_prefix}_sel", "")
+
+    raw = st.text_input(label, key=f"{key_prefix}_q", placeholder="Digite números…")
+    q = re.sub(r"\D+", "", raw or "")
+    if q != (raw or ""):
+        st.session_state[f"{key_prefix}_q"] = q  # normaliza na UI
+
+    # se já selecionou, mantém
+    options = []
+    if series is not None and not series.empty:
+        vals = series.dropna().astype(str)
+        vals = vals[vals.str.fullmatch(r"\d+")]  # só números
+        uniq = sorted(vals.unique().tolist())
+        if q:
+            starts = [v for v in uniq if v.startswith(q)]
+            contains = [v for v in uniq if (q in v and not v.startswith(q))]
+            options = (starts + contains)[:max_suggestions]
+        else:
+            options = uniq[:max_suggestions]
+
+    sel = st.selectbox(
+        "Sugestões",
+        [""] + options,
+        key=f"{key_prefix}_sel",
+        label_visibility="collapsed",
+        help="Selecione um código sugerido (opcional).",
+    )
+
+    return sel or (q if q else "")
+    if "nr_oc" in df.columns:
+        m = df[df["nr_oc"].fillna("").astype(str).str.strip() == k]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+    if "nr_solicitacao" in df.columns:
+        m = df[df["nr_solicitacao"].fillna("").astype(str).str.strip() == k]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+
+    if "nr_oc" in df.columns:
+        m = df[df["nr_oc"].fillna("").astype(str).str.contains(k, na=False)]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+    if "nr_solicitacao" in df.columns:
+        m = df[df["nr_solicitacao"].fillna("").astype(str).str.contains(k, na=False)]
+        if not m.empty:
+            return str(m.iloc[0].get("id") or "")
+
+    return None
+
+
+def _inject_consulta_css():
+    st.markdown(
+        """
+<style>
+/* Reduz poluição visual e melhora densidade */
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+h1, h2, h3 { letter-spacing: .2px; }
+[data-testid="stMetric"] { padding: .6rem .75rem; border-radius: 14px; }
+[data-testid="stMetric"] > div { gap: .1rem; }
+div.stButton > button { border-radius: 12px; height: 2.6rem; }
+div[data-testid="stHorizontalBlock"] { align-items: center; }
+/* Fixar colunas principais no Data Editor (ERP-like v2) */
+[data-testid="stDataEditor"] [role="columnheader"],
+[data-testid="stDataEditor"] [role="gridcell"] { white-space: nowrap; }
+[data-testid="stDataEditor"] [role="row"] > [role="gridcell"]:nth-child(1),
+[data-testid="stDataEditor"] [role="row"] > [role="columnheader"]:nth-child(1) { position: sticky; left: 0px; z-index: 6; background: rgba(15,17,20,.98); }
+[data-testid="stDataEditor"] [role="row"] > [role="gridcell"]:nth-child(2),
+[data-testid="stDataEditor"] [role="row"] > [role="columnheader"]:nth-child(2) { position: sticky; left: 68px; z-index: 5; background: rgba(15,17,20,.98); }
+[data-testid="stDataEditor"] [role="row"] > [role="gridcell"]:nth-child(3),
+[data-testid="stDataEditor"] [role="row"] > [role="columnheader"]:nth-child(3) { position: sticky; left: 210px; z-index: 4; background: rgba(15,17,20,.98); }
+
+[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"],
+[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"] { white-space: nowrap; }
+/* 1ª coluna (Abrir) */
+[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"]:nth-child(1),
+[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"]:nth-child(1) { position: sticky; left: 0; z-index: 5; background: rgba(15,17,20,.98); }
+/* 2ª coluna (Cód. equipamento) */
+[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"]:nth-child(2),
+[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"]:nth-child(2) { position: sticky; left: 70px; z-index: 4; background: rgba(15,17,20,.98); }
+/* 3ª coluna (Descrição) */
+[data-testid="stDataEditor"] div[role="grid"] [role="columnheader"]:nth-child(3),
+[data-testid="stDataEditor"] div[role="grid"] [role="gridcell"]:nth-child(3) { position: sticky; left: 220px; z-index: 3; background: rgba(15,17,20,.98); }
+
+.small-muted { opacity: .8; font-size: .9rem; }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def exibir_consulta_pedidos(_supabase):
+    # Refresh vindo do header global (se existir)
+    if st.session_state.pop("_consulta_force_refresh", False):
+        _clear_cached_pedidos(st.session_state.get("tenant_id"))
+
+    if carregar_pedidos is None:
+        st.error("Função 'carregar_pedidos' não encontrada. Verifique o import em src.repositories.pedidos.")
+        return
+
+    _inject_consulta_css()
+
+    # Topbar (mais limpa)
+    topL, topR = st.columns([2.2, 1.3])
+    with topL:
+        st.title("Consultar Pedidos")
+
+        # Estilo (lista ERP): pills, hover suave, compacto, fade-in
+        st.markdown("""
+        <style>
+        @keyframes fuFadeIn { from {opacity: 0; transform: translateY(2px);} to {opacity: 1; transform: translateY(0);} }
+        section.main > div.block-container { animation: fuFadeIn .15s ease-out; }
+
+        .st-pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600;
+                  border: 1px solid rgba(255,255,255,.10); }
+        .st-pill-green { background: rgba(46, 204, 113, .18); color: rgba(46, 204, 113, 1); }
+        .st-pill-yellow{ background: rgba(241, 196, 15, .18); color: rgba(241, 196, 15, 1); }
+        .st-pill-red   { background: rgba(231, 76, 60, .18); color: rgba(231, 76, 60, 1); }
+        .st-pill-blue  { background: rgba(52, 152, 219, .18); color: rgba(52, 152, 219, 1); }
+        .st-pill-orange{ background: rgba(230, 126, 34, .18); color: rgba(230, 126, 34, 1); }
+        .st-pill-neutral{ background: rgba(255,255,255,.07); color: rgba(255,255,255,.80); }
+
+        /* Modo compacto */
+        [data-testid="stVerticalBlock"] .stCaption { margin-top: 0.15rem; margin-bottom: 0.15rem; }
+        [data-testid="stButton"] button { padding-top: .35rem; padding-bottom: .35rem; }
+
+        /* Hover highlight (no botão da descrição, que é a "linha clicável") */
+        [data-testid="stButton"] button:hover { filter: brightness(1.05); }
+        </style>
+        """, unsafe_allow_html=True)
+    st.caption("Busque, filtre e aja rápido sem poluir a tela.")
+    st.caption("💡 Dica: os filtros ficam no menu lateral (🎛️ Filtros).")
+    # Botões de ação ficam no header global do app (evita duplicação nesta página)
+
+    tenant_id = st.session_state.get("tenant_id")
+    df_raw = _get_cached_pedidos(_supabase, tenant_id)
+    if df_raw is None or df_raw.empty:
+        ux.info("📭 Nenhum pedido cadastrado.")
+        return
+
+    df = _prepare_search(_make_stamp(df_raw), df_raw)
+    # Status disponíveis no dataset (para filtro rápido executivo)
+    try:
+        if "status" in df.columns:
+            st.session_state["consulta_status_opts"] = sorted(df["status"].dropna().astype(str).unique().tolist())
+        else:
+            st.session_state.setdefault("consulta_status_opts", [])
+    except Exception:
+        st.session_state.setdefault("consulta_status_opts", [])
+
+
+    # -------------------- Estado padrão (filtros + seleção)
+    st.session_state.setdefault("c_q", "")
+    st.session_state.setdefault("c_deptos", [])
+    st.session_state.setdefault("c_uf", [])
+    st.session_state.setdefault("c_status_list", [])
+    st.session_state.setdefault("c_cod_equip", "")
+    st.session_state.setdefault("c_cod_mat", "")
+    st.session_state.setdefault("c_atraso", False)
+    st.session_state.setdefault("c_pp", 50)
+    st.session_state.setdefault("c_pag", 1)
+    st.session_state.setdefault("consulta_selected_pid", None)
+    st.session_state.setdefault("consulta_auto_opened_pid", None)
+    st.session_state.setdefault("consulta_selected_label", "")
+    st.session_state.setdefault("go_key", "")
+
+    # -------------------- Navegação por KPIs (Dashboard -> Consulta)
+    # Usa uma chave simples e remove após aplicar, para não "grudar".
+    nav_mode = st.session_state.pop("consulta_nav_mode", None)
+    if nav_mode:
+        nav_mode = str(nav_mode).strip().lower()
+        st.session_state["c_pag"] = 1
+        # limpa filtros que normalmente atrapalham uma navegação rápida
+        st.session_state["c_status_list"] = []
+        st.session_state["c_deptos"] = st.session_state.get("c_deptos", []) or []
+        st.session_state["c_uf"] = st.session_state.get("c_uf", []) or []
+        st.session_state["c_atraso"] = False
+
+        # aplica por regra equivalente ao Dashboard
+        base = df.copy()
+        entregue = base.get("entregue", pd.Series([False] * len(base))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+        due = _compute_due_dates(base)
+        hoje = pd.Timestamp.now().normalize()
+        limite = hoje + pd.Timedelta(days=3)
+        flag_atrasado = base.get("atrasado", pd.Series([False] * len(base))).astype(str).str.lower().isin(["true", "1", "yes", "sim"])
+
+        if nav_mode == "pendentes":
+            mask = ~entregue
+        elif nav_mode == "atrasados":
+            mask = (~entregue) & (flag_atrasado | (due.notna() & (due < hoje)))
+            st.session_state["c_atraso"] = True
+        elif nav_mode == "vencendo":
+            mask = (~entregue) & (due.notna() & (due >= hoje) & (due <= limite))
+            st.session_state["consulta_due_window"] = "vencendo"
+        elif nav_mode == "risco":
+            mask = (~entregue) & (
+                flag_atrasado | (due.notna() & (due < hoje)) |
+                (due.notna() & (due >= hoje) & (due <= limite))
+            )
+            st.session_state["consulta_due_window"] = "risco"
+        else:
+            mask = pd.Series([True] * len(base), index=base.index)
+
+        # guarda um filtro rápido por IDs para ser aplicado no _apply_filters
+        try:
+            st.session_state["consulta_nav_ids"] = set(base.loc[mask].index.tolist())
+        except Exception:
+            st.session_state["consulta_nav_ids"] = None
+    # -------------------- Presets/Atalhos (robusto, evita StreamlitAPIException)
+    # Regras:
+    # - Callback (on_change/on_click) roda antes de renderizar widgets -> seguro para setar chaves
+    # - Presets respeitam status disponíveis no dataset (quando aplicável)
+    def _apply_preset(preset: str, status_opts: list[str] | None = None):
+        preset = (preset or "—").strip()
+
+        desired_by_preset = {
+            "Sem OC": ["Sem OC"],
+            "Transporte": ["Em Transporte"],
+            "Em Transporte": ["Em Transporte"],
+            "Entregues": ["Entregue"],
         }
-        viz = st.session_state.setdefault("dash_viz", default_viz.copy())
-        # Garantir compat caso novos campos sejam adicionados
-        for k, v in default_viz.items():
-            viz.setdefault(k, v)
 
-        with st.form("dash_viz_form", clear_on_submit=False):
-            # Modo compacto default no mobile (melhor percepção e performance)
-            compacto_tmp = st.toggle(
-                "Modo compacto (mostrar só o essencial)",
-                value=bool(viz.get("compacto", False)),
-                key="dash_viz_compacto_tmp",
+        st.session_state["c_pag"] = 1
+
+        if preset in ("—", "", "Todos"):
+            # "Todos" volta ao estado neutro
+            if preset == "Todos":
+                st.session_state["c_atraso"] = False
+                st.session_state["c_status_list"] = []
+            return
+
+        if preset == "Limpar":
+            st.session_state["c_atraso"] = False
+            st.session_state["c_status_list"] = []
+            return
+
+        if preset == "Atrasados":
+            st.session_state["c_atraso"] = True
+            st.session_state["c_status_list"] = []
+            return
+
+        wanted = desired_by_preset.get(preset, [])
+        if status_opts:
+            wanted = [s for s in wanted if s in status_opts]
+        st.session_state["c_status_list"] = wanted
+        st.session_state["c_atraso"] = False
+
+    def _apply_preset_from_selectbox():
+        preset = st.session_state.get("consulta_preset") or "—"
+        status_opts_atual = st.session_state.get("consulta_status_opts") or None
+        _apply_preset(preset, status_opts=status_opts_atual)
+
+# =========================
+    # -------------------- Tabs para reduzir poluição
+    st.session_state.setdefault("consulta_tab", "Lista")
+    st.session_state.setdefault("consulta_tab_target", None)
+
+    # Se alguma ação pediu troca de aba (ex.: clique em linha), aplica ANTES de criar o widget st.radio
+    target_tab = st.session_state.get("consulta_tab_target")
+    if target_tab:
+        st.session_state["consulta_tab"] = target_tab
+        st.session_state["consulta_tab_target"] = None
+
+
+    # Top controls (executivo): Navegação + Filtro rápido na mesma linha
+    # =========================
+    st.markdown(
+        '''
+        <style>
+          /* Top controls: duas "segment bars" minimalistas (vermelho) */
+          .fu-top-controls{ margin: 6px 0 6px 0; }
+          .fu-top-controls .fu-segbar{ display:flex; align-items:center; }
+          .fu-top-controls .fu-segbar [role="radiogroup"]{
+            display:inline-flex !important;
+            gap: 0 !important;
+            padding: 4px !important;
+            border-radius: 14px !important;
+            border: 1px solid rgba(255,255,255,0.10) !important;
+            background: rgba(255,255,255,0.03) !important;
+            overflow: hidden !important;
+          }
+          .fu-top-controls .fu-segbar [role="radiogroup"] > label{ margin:0 !important; }
+          .fu-top-controls .fu-segbar [role="radiogroup"] label{
+            padding: 6px 12px !important;
+            border-radius: 10px !important;
+            border: 1px solid transparent !important;
+            background: transparent !important;
+            transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+            user-select:none;
+            white-space: nowrap;
+          }
+          .fu-top-controls .fu-segbar [role="radiogroup"] label:hover{
+            border-color: rgba(239,68,68,0.22) !important;
+            background: rgba(239,68,68,0.08) !important;
+          }
+          .fu-top-controls .fu-segbar [role="radiogroup"] input:checked + div{
+            border-radius: 10px !important;
+            background: rgba(239,68,68,0.16) !important;
+            box-shadow: inset 0 0 0 1px rgba(239,68,68,0.35) !important;
+          }
+          .fu-top-controls .fu-segbar [role="radiogroup"] label div{
+            font-weight: 850 !important;
+            font-size: 0.86rem !important;
+            padding: 0 !important;
+          }
+          /* Esconde bolinha do radio (fica estilo tabs) */
+          .fu-top-controls .fu-segbar [role="radiogroup"] label span:first-child{ display:none !important; }
+
+          /* Alinhamento e responsividade */
+          .fu-top-controls .fu-top-nav{ justify-content:flex-start; }
+          .fu-top-controls .fu-top-quick{ justify-content:flex-end; }
+          @media (max-width: 980px){
+            .fu-top-controls .fu-top-nav{ justify-content:center; margin-bottom: 6px; }
+            .fu-top-controls .fu-top-quick{ justify-content:center; }
+          }
+        </style>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+    nav_col, quick_col = st.columns([1.3, 2.0])
+    with nav_col:
+        st.markdown('<div class="fu-top-controls"><div class="fu-segbar fu-top-nav">', unsafe_allow_html=True)
+        tab_choice = st.radio(
+            "",
+            ["Lista", "Visão", "Ações"],
+            horizontal=True,
+            key="consulta_tab",
+            label_visibility="collapsed",
+        )
+        st.markdown("</div></div>", unsafe_allow_html=True)
+
+    with quick_col:
+        # Segment control (filtro rápido) — usa status disponíveis no dataset
+        status_opts_atual = st.session_state.get("consulta_status_opts") or []
+
+        quick_opts = ["Todos", "Atrasados"]
+        if "Sem OC" in status_opts_atual:
+            quick_opts.append("Sem OC")
+        if "Em Transporte" in status_opts_atual:
+            quick_opts.append("Transporte")
+        if "Entregue" in status_opts_atual:
+            quick_opts.append("Entregues")
+
+        st.session_state.setdefault("consulta_quick", "Todos")
+        if st.session_state.get("consulta_quick") not in quick_opts:
+            st.session_state["consulta_quick"] = "Todos"
+
+        def _apply_quick_from_control():
+            val = st.session_state.get("consulta_quick") or "Todos"
+            _apply_preset(val, status_opts=status_opts_atual)
+
+        st.markdown('<div class="fu-top-controls"><div class="fu-segbar fu-top-quick">', unsafe_allow_html=True)
+        st.radio(
+            "",
+            options=quick_opts,
+            horizontal=True,
+            key="consulta_quick",
+            label_visibility="collapsed",
+            on_change=_apply_quick_from_control,
+        )
+        st.markdown("</div></div>", unsafe_allow_html=True)
+    # =========================
+    # TAB: LISTA (principal)
+    # =========================
+    if tab_choice == "Lista":
+                # Barra superior: busca + filtros (executivo / clean)
+        st.text_input(
+            "Buscar",
+            key="c_q",
+            placeholder="OC, solicitação, descrição, fornecedor, código material/equipamento…",
+            label_visibility="collapsed",
+        )
+
+        # Filtros completos ficam na sidebar (evita poluir a tela)
+        with st.sidebar.expander("🎛️ Filtros", expanded=False):
+            # Departamento
+            if "departamento" in df.columns:
+                dept_opts = sorted(df["departamento"].dropna().astype(str).unique().tolist())
+                st.multiselect("Departamento", dept_opts, key="c_deptos", placeholder="Todos")
+            else:
+                st.multiselect("Departamento", [], key="c_deptos", placeholder="Todos")
+
+
+
+            # UF do fornecedor
+            if "fornecedor_uf" in df.columns:
+                uf_opts = sorted(
+                    df["fornecedor_uf"].dropna().astype(str).str.strip().str.upper().unique().tolist()
+                )
+                st.multiselect("UF", uf_opts, key="c_uf", placeholder="Todas")
+            else:
+                st.multiselect("UF", [], key="c_uf", placeholder="Todas")
+
+            # Status
+            if "status" in df.columns:
+                status_opts = sorted(df["status"].dropna().astype(str).unique().tolist())
+                st.session_state["consulta_status_opts"] = status_opts
+                # Normaliza valores atuais para evitar erro se preset tiver valor inválido
+                current_status = st.session_state.get("c_status_list", []) or []
+                st.session_state["c_status_list"] = [s for s in current_status if s in status_opts]
+                st.multiselect("Status", status_opts, key="c_status_list", placeholder="Todos")
+            else:
+                current_status = st.session_state.get("c_status_list", []) or []
+                st.session_state["c_status_list"] = [s for s in current_status if s in STATUS_VALIDOS]
+                st.session_state["consulta_status_opts"] = STATUS_VALIDOS
+                st.multiselect("Status", STATUS_VALIDOS, key="c_status_list", placeholder="Todos")
+
+            st.divider()
+            st.markdown("**Códigos (somente números)**")
+
+            c_eq = _numeric_autocomplete(
+                "Cód. equipamento",
+                df["cod_equipamento"] if "cod_equipamento" in df.columns else pd.Series([], dtype=str),
+                "f_cod_equip",
+            )
+            c_mat = _numeric_autocomplete(
+                "Cód. material",
+                df["cod_material"] if "cod_material" in df.columns else pd.Series([], dtype=str),
+                "f_cod_mat",
             )
 
-            with st.expander("Personalizar Dashboard", expanded=False):
-                a, b, c, d = rcols([1, 1, 1, 1])
-                with a:
-                    show_dist_tmp = st.checkbox("Distribuição", value=bool(viz.get("show_dist", True)), key="dash_viz_show_dist_tmp")
-                    show_trend_tmp = st.checkbox("Tendência", value=bool(viz.get("show_trend", True)), key="dash_viz_show_trend_tmp")
-                with b:
-                    show_rank_tmp = st.checkbox("Rankings", value=bool(viz.get("show_rank", True)), key="dash_viz_show_rank_tmp")
-                    show_aging_tmp = st.checkbox("Aging", value=bool(viz.get("show_aging", True)), key="dash_viz_show_aging_tmp")
-                with c:
-                    show_action_tmp = st.checkbox("Aja agora", value=bool(viz.get("show_action", True)), key="dash_viz_show_action_tmp")
-                    show_scatter_tmp = st.checkbox("Dispersão (valor x prazo)", value=bool(viz.get("show_scatter", False)), key="dash_viz_show_scatter_tmp")
-                with d:
-                    show_details_tmp = st.checkbox("KPIs detalhados", value=bool(viz.get("show_details", False)), key="dash_viz_show_details_tmp")
+            st.session_state["_tmp_cod_equip"] = c_eq
+            st.session_state["_tmp_cod_mat"] = c_mat
 
-            apply_viz = st.form_submit_button("Aplicar visual", use_container_width=True)
+            st.checkbox("Somente atrasados", key="c_atraso")
+            st.selectbox("Itens por página", [25, 50, 100, 200, 500], key="c_pp")
 
-        if apply_viz:
-            st.session_state["dash_viz"] = {
-                "compacto": bool(compacto_tmp),
-                "show_trend": bool(show_trend_tmp),
-                "show_rank": bool(show_rank_tmp),
-                "show_aging": bool(show_aging_tmp),
-                "show_action": bool(show_action_tmp),
-                "show_details": bool(show_details_tmp),
-                "show_dist": bool(show_dist_tmp),
-                "show_scatter": bool(show_scatter_tmp),
-            }
-            st.toast("Visual atualizado", icon="🎛️")
+            aF1, aF2 = st.columns(2)
+            if aF1.button("Aplicar", use_container_width=True):
+                st.session_state["c_cod_equip"] = st.session_state.get("_tmp_cod_equip", "")
+                st.session_state["c_cod_mat"] = st.session_state.get("_tmp_cod_mat", "")
+                st.session_state["c_pag"] = 1
+                st.rerun()
+            if aF2.button("Limpar", use_container_width=True):
+                for k in ["c_q", "c_deptos", "c_status_list", "c_cod_equip", "c_cod_mat", "_tmp_cod_equip", "_tmp_cod_mat", "c_atraso", "c_pp", "c_pag", "consulta_selected_pid", "consulta_auto_opened_pid", "go_key"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
-        viz = st.session_state.get("dash_viz", default_viz)
-        compacto = bool(viz.get("compacto", False))
-        show_trend = bool(viz.get("show_trend", True))
-        show_rank = bool(viz.get("show_rank", True))
-        show_aging = bool(viz.get("show_aging", True))
-        show_action = bool(viz.get("show_action", True))
-        show_details = bool(viz.get("show_details", False))
-        show_dist = bool(viz.get("show_dist", True))
-        show_scatter = bool(viz.get("show_scatter", False))
-
-        # =========================
-        # Distribuição (rápida, bem 'interessante')
-        # =========================
-        if show_dist:
-            st.markdown("#### Distribuição das pendências")
-            sig = st.session_state.get("dash_last_generated", "")
-            def _calc_dist():
-                total = int(len(pendentes))
-                a = int(len(atrasados))
-                v = int(len(vencendo))
-                ok = max(total - a - v, 0)
-                return pd.DataFrame(
-                    {
-                        "grupo": ["Atrasados", "Vencendo (≤3d)", "No prazo"],
-                        "qtd": [a, v, ok],
-                        "valor": [
-                            float(atrasados["_valor"].sum()),
-                            float(vencendo["_valor"].sum()),
-                            float((pendentes.drop(atrasados.index, errors="ignore").drop(vencendo.index, errors="ignore")["_valor"].sum()) if total else 0.0),
-                        ],
-                    }
-                )
-            dist = _memo("dist", sig, _calc_dist)
-            c1, c2 = rcols(2) if not mobile_now else rcols(1)
-            with c1:
-                def _build_pie():
-                    fig = px.pie(dist, names="grupo", values="qtd", hole=0.55)
-                    fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), legend_title_text="")
-                    return fig
-                fig_p = _fig_memo("dist_pie", sig, _build_pie)
-                st.plotly_chart(fig_p, use_container_width=True, config=plot_config)
-            with c2:
-                def _build_bar():
-                    fig = px.bar(dist, x="grupo", y="valor")
-                    add_bar_labels(fig, kind="money")
-                    fig.update_layout(height=280, margin=dict(l=10, r=30, t=10, b=10), xaxis_title="", yaxis_title="Valor (R$)")
-                    style_plotly(fig, kind="bar", height=280, force_single_color=True)
-                    return fig
-                fig_v = _fig_memo("dist_bar", sig, _build_bar)
-                st.plotly_chart(fig_v, use_container_width=True, config=plot_config)
-
-        # =========================
-
-        # =========================
-        # Drill-down: UF / Departamento (clicável)
-        # =========================
-        st.markdown("#### Onde está o risco (UF / Departamento)")
-
-        metric_geo = st.radio(
-            "Métrica",
-            ["Valor (R$)", "Quantidade"],
-            horizontal=True,
-            key="dash_geo_metric",
+        # Aplicar filtros (sem “fake rerun”)
+        df_f = _apply_filters(
+            df,
+            st.session_state.get("c_q", ""),
+            st.session_state.get("c_deptos", []),
+            st.session_state.get("c_uf", []),
+            st.session_state.get("c_status_list", []),
+            st.session_state.get("c_atraso", False),
+            st.session_state.get("c_cod_equip", ""),
+            st.session_state.get("c_cod_mat", ""),
         )
 
-        col_uf, col_dept = rcols([1, 1])
+        # KPIs dinâmicos (baseado nos filtros)
+        k1, k2, k3, k4 = st.columns(4)
+        total_itens = int(len(df_f))
+        atrasados = (
+            int(df_f.get("dias_atraso", pd.Series([], dtype=float)).fillna(0).astype(float).gt(0).sum())
+            if not df_f.empty
+            else 0
+        )
+        sem_oc = (
+            int(df_f.get("nr_oc", pd.Series([], dtype=str)).fillna("").astype(str).isin(["", "0"]).sum())
+            if "nr_oc" in df_f.columns
+            else 0
+        )
+        valor_total = (
+            float(df_f.get("valor_total", pd.Series([], dtype=float)).fillna(0).astype(float).sum())
+            if "valor_total" in df_f.columns
+            else 0.0
+        )
+        k1.metric("Resultados", f"{total_itens}")
+        k2.metric("Atrasados", f"{atrasados}")
+        k3.metric("Sem OC", f"{sem_oc}")
+        k4.metric("Valor", f"R$ {valor_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        st.markdown("---")
+        st.caption("Legenda: 🟢 OK/Tem OC • 🟡 Em aberto • 🟠 Transporte • 🔴 Atrasado • 🔵 Sem OC")
 
-        # Base cacheada: evita custo em reruns por scroll/expanders
-        sig = st.session_state.get("dash_last_generated", "")
-        df_base = _memo("geo_base", sig, lambda: pendentes.copy())
-        df_base["fornecedor_uf"] = df_base.get("fornecedor_uf", "").fillna("").astype(str).str.strip().str.upper()
-        df_base["departamento"] = df_base.get("departamento", "").fillna("").astype(str).str.strip()
+        # Chips compactos
+        chips = []
+        if st.session_state.get("c_q"):
+            chips.append(f"Busca: {st.session_state['c_q']}")
+        if st.session_state.get("c_deptos"):
+            d = st.session_state["c_deptos"]
+            chips.append(f"Depto: {', '.join(d[:2])}{'…' if len(d)>2 else ''}")
+        if st.session_state.get("c_status_list"):
+            s = st.session_state["c_status_list"]
+            chips.append(f"Status: {', '.join(s[:2])}{'…' if len(s)>2 else ''}")
+        if st.session_state.get("c_atraso"):
+            chips.append("Atrasados")
+        if st.session_state.get("c_cod_equip"):
+            chips.append(f"Eq: {st.session_state['c_cod_equip']}")
+        if st.session_state.get("c_cod_mat"):
+            chips.append(f"Mat: {st.session_state['c_cod_mat']}")
+        if chips:
+            st.caption(" | ".join(chips))
 
-        with col_uf:
-            if "fornecedor_uf" in df_base.columns and df_base["fornecedor_uf"].str.len().gt(0).any():
-                def _calc_uf():
-                    return (
-                        df_base[df_base["fornecedor_uf"].str.len().gt(0)]
-                        .groupby("fornecedor_uf")
-                        .agg(Valor=("_valor", "sum"), Qtd=("_valor", "size"))
-                        .sort_values(by="Valor", ascending=False)
-                        .head(12)
-                        .reset_index()
-                        .rename(columns={"fornecedor_uf": "UF"})
-                    )
-                g_uf = _memo("geo_uf", sig, _calc_uf)
+        # Paginação com setas (compacta)
+        total = len(df_f)
+        pp = int(st.session_state.get("c_pp", 50))
+        total_pages = max(1, math.ceil(total / pp))
+        st.session_state["c_pag"] = min(max(1, int(st.session_state.get("c_pag", 1))), total_pages)
 
-                xcol = "Valor" if metric_geo.startswith("Valor") else "Qtd"
-                x_title = "Valor (R$)" if xcol == "Valor" else "Quantidade (itens)"
-                label_kind = "money" if xcol == "Valor" else "count"
+        nav1, nav2, nav3 = st.columns([1, 2, 1])
+        with nav1:
+            if st.button("◀", disabled=st.session_state["c_pag"] <= 1, use_container_width=True):
+                st.session_state["c_pag"] -= 1
+                st.rerun()
+        with nav2:
+            st.markdown(
+                f'<div style="text-align:center" class="small-muted">Página <b>{st.session_state["c_pag"]}</b> de <b>{total_pages}</b> • <b>{total}</b> itens</div>',
+                unsafe_allow_html=True,
+            )
+        with nav3:
+            if st.button("▶", disabled=st.session_state["c_pag"] >= total_pages, use_container_width=True):
+                st.session_state["c_pag"] += 1
+                st.rerun()
 
-                def _build_fig_uf():
-                    fig = px.bar(
-                        g_uf,
-                        x=xcol,
-                        y="UF",
-                        orientation="h",
-                        title="Top 12 por UF",
-                        custom_data=["Valor", "Qtd"],
-                    )
-                    add_bar_labels(fig, kind=label_kind, position="outside")
-                    style_plotly(fig, height=460, kind="bar", force_single_color=True)
-                    fig.update_yaxes(autorange="reversed", title="")
-                    fig.update_xaxes(title=x_title)
-                    fig.update_traces(
-                        hovertemplate="<b>%{y}</b>"
-                        "<br>Valor: R$ %{customdata[0]:,.0f}"
-                        "<br>Quantidade: %{customdata[1]}"
-                        "<extra></extra>"
-                    )
-                    return fig
+        ini = (st.session_state["c_pag"] - 1) * pp
+        fim = ini + pp
+        page = df_f.iloc[ini:fim].copy()
 
-                fig_uf = _fig_memo("geo_uf", f"{sig}:{xcol}", _build_fig_uf)
+        # Tabela mais limpa: evita descrições enormes
+        show_cols = []
+        preferred = ["cod_equipamento", "descricao", "nr_oc", "nr_solicitacao", "departamento", "status", "cod_material", "valor_total", "dias_atraso"]
+        for c in preferred:
+            if c in page.columns:
+                show_cols.append(c)
+        if not show_cols:
+            show_cols = page.columns.tolist()
 
-                st.caption("Clique em uma barra para abrir a Consulta já filtrada pela UF.")
-                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))) and (not bool(st.session_state.get('dash_fast_charts', True))):
-                    sel = plotly_events(fig_uf, click_event=True, hover_event=False, select_event=False, key="dash_drill_uf")
-                    if sel:
-                        uf = sel[0].get("y") or sel[0].get("x")
-                        if uf:
-                            _drill_to_consulta(uf=str(uf))
+        if "descricao" in page.columns:
+            page["descricao"] = page["descricao"].fillna("").astype(str).str.slice(0, 90) + page["descricao"].fillna("").astype(str).apply(lambda x: "…" if len(x) > 90 else "")
+
+
+        # Badge de status
+
+        if "status" in page.columns:
+
+            page["status"] = page["status"].astype(str).apply(_badge_status)
+
+
+        # Tabela (modo responsivo): se data_editor existir, permite selecionar uma linha (checkbox)
+
+        pid_editor = _render_tabela_selecao_unica(page, show_cols)
+
+        if pid_editor:
+            st.session_state["consulta_selected_pid"] = pid_editor
+            st.session_state["consulta_tab_target"] = "Ações"
+            st.rerun()
+# =========================
+    # TAB: VISÃO (KPIs + atalhos)
+    # =========================
+    if tab_choice == "Visão":
+        atrasados = int(_is_atrasado(df).sum())
+        sem_oc = int((df["status"] == "Sem OC").sum()) if "status" in df.columns else 0
+        transporte = int((df["status"] == "Em Transporte").sum()) if "status" in df.columns else 0
+        entregues = int((df["status"] == "Entregue").sum()) if "status" in df.columns else 0
+        total = int(len(df))
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Total", total)
+        k2.metric("Atrasados", atrasados)
+        k3.metric("Sem OC", sem_oc)
+        k4.metric("Transporte", transporte)
+        k5.metric("Entregues", entregues)
+
+        st.markdown("##### Atalhos")
+        a1, a2, a3, a4 = st.columns(4)
+        if a1.button("📦 Atrasados", use_container_width=True):
+            st.session_state.update({"c_atraso": True, "c_status_list": [], "c_pag": 1})
+            st.rerun()
+        if a2.button("🧾 Sem OC", use_container_width=True):
+            st.session_state.update({"c_status_list": ["Sem OC"], "c_atraso": False, "c_pag": 1})
+            st.rerun()
+        if a3.button("🚚 Transporte", use_container_width=True):
+            st.session_state.update({"c_status_list": ["Em Transporte"], "c_atraso": False, "c_pag": 1})
+            st.rerun()
+        if a4.button("✅ Entregues", use_container_width=True):
+            st.session_state.update({"c_status_list": ["Entregue"], "c_atraso": False, "c_pag": 1})
+            st.rerun()
+
+        ux.info("Dica: use os atalhos aqui e volte na aba **Lista** para ver o resultado sem poluir a tela.")
+
+    # =========================
+    # TAB: AÇÕES (operacional)
+    # =========================
+    if tab_choice == "Ações":
+        st.markdown("#### Ações rápidas")
+        st.caption("Localize um pedido por OC/Solicitação e abra diretamente na Gestão/Ficha.")
+
+        aC1, aC2, aC3 = st.columns([2.4, 1.0, 2.0])
+        with aC1:
+            st.text_input("OC/SOL", key="go_key", placeholder="Ex: 181151 ou 433526", label_visibility="collapsed")
+        with aC2:
+            if st.button("Ir", use_container_width=True):
+                pid = _find_pid_by_key(df, st.session_state.get("go_key", ""))
+                if pid:
+                    st.session_state["consulta_selected_pid"] = pid
+                    ux.ok("Pedido localizado.")
                 else:
-                    st.plotly_chart(fig_uf, use_container_width=True, config=plot_config)
-                    uf_pick = st.selectbox("Ir para Consulta (UF)", [""] + g_uf["UF"].astype(str).tolist(), key="dash_uf_pick")
-                    if uf_pick:
-                        _drill_to_consulta(uf=uf_pick)
-            else:
-                st.info("Sem dados de UF para gerar o gráfico.")
+                    ux.warn("Não encontrei OC/SOL com esse valor.")
 
-        with col_dept:
-            if "departamento" in df_base.columns and df_base["departamento"].str.len().gt(0).any():
-                def _calc_dep():
-                    return (
-                        df_base[df_base["departamento"].str.len().gt(0)]
-                        .groupby("departamento")
-                        .agg(Valor=("_valor", "sum"), Qtd=("_valor", "size"))
-                        .sort_values(by="Valor", ascending=False)
-                        .head(12)
-                        .reset_index()
-                        .rename(columns={"departamento": "Departamento"})
-                    )
-                g_dep = _memo("geo_dep", sig, _calc_dep)
+        pid = st.session_state.get("consulta_selected_pid")
+        if not pid:
+            ux.info("Selecione um pedido na aba **Lista** ou use o campo acima.")
+            return
 
-                xcol = "Valor" if metric_geo.startswith("Valor") else "Qtd"
-                x_title = "Valor (R$)" if xcol == "Valor" else "Quantidade (itens)"
-                label_kind = "money" if xcol == "Valor" else "count"
+        row = df[df["id"].astype(str) == str(pid)] if "id" in df.columns else pd.DataFrame()
+        if row.empty and "nr_oc" in df.columns:
+            row = df[df["nr_oc"].fillna("").astype(str) == str(pid)]
+        if row.empty:
+            ux.warn("Pedido selecionado não foi encontrado no dataset atual.")
+            return
 
-                def _build_fig_dep():
-                    fig = px.bar(
-                        g_dep,
-                        x=xcol,
-                        y="Departamento",
-                        orientation="h",
-                        title="Top 12 por Departamento",
-                        custom_data=["Valor", "Qtd"],
-                    )
-                    add_bar_labels(fig, kind=label_kind, position="outside")
-                    style_plotly(fig, height=460, kind="bar", force_single_color=True)
-                    fig.update_yaxes(autorange="reversed", title="")
-                    fig.update_xaxes(title=x_title)
-                    fig.update_traces(
-                        hovertemplate="<b>%{y}</b>"
-                        "<br>Valor: R$ %{customdata[0]:,.0f}"
-                        "<br>Quantidade: %{customdata[1]}"
-                        "<extra></extra>"
-                    )
-                    return fig
+        r = row.iloc[0]
 
-                fig_dep = _fig_memo("geo_dep", f"{sig}:{xcol}", _build_fig_dep)
-
-                st.caption("Clique em uma barra para abrir a Consulta já filtrada pelo Departamento.")
-                if (plotly_events is not None) and (not bool(st.session_state.get('dash_turbo', True))) and (not bool(st.session_state.get('dash_fast_charts', True))):
-                    sel = plotly_events(fig_dep, click_event=True, hover_event=False, select_event=False, key="dash_drill_dept")
-                    if sel:
-                        dep = sel[0].get("y") or sel[0].get("x")
-                        if dep:
-                            _drill_to_consulta(dept=str(dep))
-                else:
-                    st.plotly_chart(fig_dep, use_container_width=True, config=plot_config)
-                    dep_pick = st.selectbox("Ir para Consulta (Departamento)", [""] + g_dep["Departamento"].astype(str).tolist(), key="dash_dep_pick")
-                    if dep_pick:
-                        _drill_to_consulta(dept=dep_pick)
-            else:
-                st.info("Sem dados de departamento para gerar o gráfico.")
-
-# Tendência semanal (melhorada)
-                # =========================
-                if show_trend:
-                    st.markdown("#### Tendência (semanal)")
-                    sig = st.session_state.get("dash_last_generated", "")
-                    def _calc_trend():
-                        df_trend = pendentes.copy()
-                        df_trend["_week"] = df_trend["_due"].dt.to_period("W").astype(str)
-                        df_trend["_is_atrasado"] = (df_trend["_due"].notna() & (df_trend["_due"] < hoje)) | (df_trend["_atrasado"])
-                        df_trend["_is_vencendo"] = df_trend["_due"].notna() & (df_trend["_due"] >= hoje) & (df_trend["_due"] <= data_limite)
-                        grp = (
-                            df_trend.groupby("_week").agg(
-                                pendentes=("nr_oc", "count"),
-                                atrasados=("_is_atrasado", "sum"),
-                                vencendo=("_is_vencendo", "sum"),
-                                valor_pendente=("_valor", "sum"),
-                            ).reset_index()
-                        )
-                        grp["no_prazo"] = (grp["pendentes"] - grp["atrasados"] - grp["vencendo"]).clip(lower=0)
-                        return grp
-
-                    grp = _memo("trend", sig, _calc_trend)
-
-                    if not grp.empty:
-                        # 1) barras empilhadas (qtd)
-                        fig_q = go.Figure()
-                        fig_q.add_trace(go.Bar(x=grp["_week"], y=grp["atrasados"], name="Atrasados"))
-                        fig_q.add_trace(go.Bar(x=grp["_week"], y=grp["vencendo"], name="Vencendo (≤3d)"))
-                        fig_q.add_trace(go.Bar(x=grp["_week"], y=grp["no_prazo"], name="No prazo"))
-                        fig_q.update_layout(barmode="stack", height=320, margin=dict(l=10, r=10, t=10, b=10),
-                                            xaxis_title="Semana", yaxis_title="Qtd")
-                        style_plotly(fig_q, kind="bar", height=360)
-                        st.plotly_chart(fig_q, use_container_width=True, config=plot_config)
-
-                        # 2) linha de valor pendente (se não estiver em mobile/compacto)
-                        if not mobile_now and not compacto:
-                            fig_val = go.Figure()
-                            fig_val.add_trace(go.Scatter(x=grp["_week"], y=grp["valor_pendente"], mode="lines+markers+text",
-                                                         name="Valor pendente", text=grp["valor_pendente"].round(0), textposition="top center"))
-                            fig_val.update_layout(height=260, margin=dict(l=10, r=30, t=10, b=10),
-                                                  xaxis_title="Semana", yaxis_title="Valor (R$)")
-                            style_plotly(fig_val, kind="bar", height=360)
-                            st.plotly_chart(fig_val, use_container_width=True, config=plot_config)
-                    else:
-                        st.caption("Sem dados suficientes para tendência.")
-
-                # =========================
-                # Seções pesadas: só quando não estiver em modo compacto
-                # =========================
-                if not compacto:
-                    # =========================
-                    # Rankings (mais legível)
-                    # =========================
-                    if show_rank:
-                        c1, c2 = rcols(2) if not mobile_now else rcols(1)
-
-                        with c1:
-                            st.markdown("#### Top fornecedores (valor em risco)")
-                            if "fornecedor_nome" in pendentes.columns and not pendentes.empty:
-                                sig = st.session_state.get("dash_last_generated", "")
-                                def _calc_risk_forn():
-                                    risk = pd.concat([atrasados, vencendo], ignore_index=True)
-                                    if risk.empty:
-                                        return None
-                                    out = (
-                                        risk.groupby("fornecedor_nome", dropna=False)["_valor"]
-                                        .sum()
-                                        .sort_values(ascending=False)
-                                        .head(10)
-                                    )
-                                    return out
-
-                                r = _memo("rank_forn", sig, _calc_risk_forn)
-                                if r is not None and not r.empty:
-                                    fig_f = px.bar(x=r.values, y=r.index, orientation="h")
-                                    add_bar_labels(fig_f, kind="money")
-                                    fig_f.update_traces(text=r.values.round(0), texttemplate="%{text}", textposition="outside", cliponaxis=False)
-                                    fig_f.update_layout(height=360, margin=dict(l=10, r=40, t=10, b=10),
-                                                        xaxis_title="Valor em risco (R$)", yaxis_title="")
-                                    style_plotly(fig_f, kind="bar", height=360, force_single_color=True)
-                                    st.plotly_chart(fig_f, use_container_width=True, config=plot_config)
-                                else:
-                                    st.caption("Sem pedidos em risco no recorte.")
-                            else:
-                                st.caption("Coluna fornecedor_nome ausente ou sem dados.")
-
-                        with c2:
-                            st.markdown("#### Top departamentos (qtd em risco)")
-                            if "departamento" in pendentes.columns and not pendentes.empty:
-                                sig = st.session_state.get("dash_last_generated", "")
-                                def _calc_risk_dept():
-                                    tmp = pd.concat([atrasados, vencendo], ignore_index=True)
-                                    if tmp.empty:
-                                        return None
-                                    return (
-                                        tmp["departamento"].astype(str).str.strip()
-                                        .replace("", pd.NA).dropna()
-                                        .value_counts().head(10)
-                                    )
-
-                                d = _memo("rank_dept", sig, _calc_risk_dept)
-                                if d is not None and not d.empty:
-                                    fig_d = px.bar(x=d.values, y=d.index, orientation="h")
-                                    add_bar_labels(fig_d, kind="count")
-                                    fig_d.update_traces(text=d.values, texttemplate="%{text}", textposition="outside", cliponaxis=False)
-                                    fig_d.update_layout(height=360, margin=dict(l=10, r=40, t=10, b=10),
-                                                        xaxis_title="Quantidade", yaxis_title="")
-                                    st.plotly_chart(fig_d, use_container_width=True, config=plot_config)
-                                else:
-                                    st.caption("Sem pedidos em risco no recorte.")
-                            else:
-                                st.caption("Coluna departamento ausente ou sem dados.")
-
-                    # =========================
-                    # Aging
-                    # =========================
-                    if show_aging:
-                        st.markdown("#### Aging de atrasos")
-                        if not atrasados.empty:
-                            sig = st.session_state.get("dash_last_generated", "")
-                            def _calc_aging():
-                                dias_atraso = (hoje - atrasados["_due"]).dt.days.clip(lower=0)
-                                bins = [-1, 7, 15, 30, 60, 10_000]
-                                labels = ["0–7", "8–15", "16–30", "31–60", "60+"]
-                                return pd.cut(dias_atraso, bins=bins, labels=labels).value_counts().reindex(labels).fillna(0).astype(int)
-
-                            aging = _memo("aging", sig, _calc_aging)
-                            fig_a = px.bar(x=aging.index, y=aging.values)
-                            add_bar_labels(fig_a, kind="count")
-                            fig_a.update_traces(text=aging.values, texttemplate="%{text}", textposition="outside", cliponaxis=False)
-                            fig_a.update_layout(height=320, margin=dict(l=10, r=40, t=10, b=10),
-                                                xaxis_title="Dias em atraso", yaxis_title="Quantidade")
-                            style_plotly(fig_a, kind="bar", height=320, force_single_color=True)
-                            st.plotly_chart(fig_a, use_container_width=True, config=plot_config)
-                        else:
-                            ux.ok("Sem pedidos atrasados no recorte atual.")
-
-                    # =========================
-                    # Dispersão (valor x dias para vencimento)
-                    # =========================
-                    if show_scatter and not pendentes.empty:
-                        st.markdown("#### Valor x Prazo (dispersão)")
-                        sig = st.session_state.get("dash_last_generated", "")
-                        def _calc_scatter():
-                            tmp = pendentes.copy()
-                            tmp["_dias_para_venc"] = (tmp["_due"] - hoje).dt.days
-                            tmp["_grupo"] = "No prazo"
-                            tmp.loc[tmp["_dias_para_venc"] < 0, "_grupo"] = "Atrasado"
-                            tmp.loc[(tmp["_dias_para_venc"] >= 0) & (tmp["_dias_para_venc"] <= 3), "_grupo"] = "Vencendo"
-                            return tmp[["_dias_para_venc", "_valor", "_grupo", "fornecedor_nome", "departamento", "nr_oc"]].copy()
-
-                        sc = _memo("scatter", sig, _calc_scatter)
-                        fig_s = px.scatter(sc, x="_dias_para_venc", y="_valor", color="_grupo", hover_data=["nr_oc", "fornecedor_nome", "departamento"])
-                        fig_s.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10),
-                                            xaxis_title="Dias para vencimento (negativo = atraso)", yaxis_title="Valor (R$)")
-                        style_plotly(fig_s, kind="bar")
-                        st.plotly_chart(fig_s, use_container_width=True, config=plot_config)
-
-                    # =========================
-                    # Aja agora (paginado + ver mais)
-                    # =========================
-                    if show_action:
-                        st.markdown("#### Aja agora")
-                        acao = pd.concat(
-                            [criticos.assign(_prior=0), atrasados.assign(_prior=1), vencendo.assign(_prior=2)],
-                            ignore_index=True,
-                        )
-                        if not acao.empty:
-                            acao["_descricao"] = acao.get("descricao", "").astype(str).str.slice(0, 80)
-                            acao["_due_str"] = acao["_due"].dt.strftime("%d/%m/%Y")
-                            acao = acao.sort_values(["_prior", "_valor"], ascending=[True, False])
-
-                            # Controles de paginação
-                            p1, p2, p3 = rcols([1, 1, 2]) if not mobile_now else rcols(1)
-                            with p1:
-                                page_size = st.selectbox("Itens por página", [10, 20, 50], index=1, key="dash_acao_page_size")
-                            total_rows = int(len(acao))
-                            max_pages = max((total_rows + int(page_size) - 1) // int(page_size), 1)
-                            with p2:
-                                page = st.number_input("Página", min_value=1, max_value=max_pages, value=min(int(st.session_state.get("dash_acao_page", 1)), max_pages), step=1, key="dash_acao_page")
-                                st.session_state["dash_acao_page"] = int(page)
-                            with p3:
-                                st.caption(f"{total_rows} itens • {max_pages} páginas")
-
-                            ini = (int(page) - 1) * int(page_size)
-                            fim = ini + int(page_size)
-                            acao_page = acao.iloc[ini:fim].copy()
-
-                            view_cols = []
-                            for col in ["nr_oc", "_descricao", "departamento", "fornecedor_nome", "_due_str", "_valor"]:
-                                if col in acao_page.columns:
-                                    view_cols.append(col)
-
-                            df_show = acao_page[view_cols].copy()
-                            if "_valor" in df_show.columns:
-                                df_show["_valor"] = df_show["_valor"].apply(formatar_moeda_br)
-
-                            st.dataframe(
-                                df_show,
-                                use_container_width=True,
-                                hide_index=True,
-                                column_config={
-                                    "nr_oc": "N° OC",
-                                    "_descricao": "Descrição",
-                                    "departamento": "Departamento",
-                                    "fornecedor_nome": "Fornecedor",
-                                    "_due_str": "Previsão",
-                                    "_valor": "Valor",
-                                },
-                            )
-
-                            if st.button("Abrir lista na Consulta (itens filtrados)", use_container_width=True, key="dash_go_acao"):
-                                ocs = acao["nr_oc"].dropna().astype(str).unique().tolist() if "nr_oc" in acao.columns else []
-                                st.session_state["quick_filter"] = {"tipo": "lista", "nro_ocs": ocs}
-                                st.session_state.current_page = "Consultar Pedidos"
-                                st.rerun()
-                        else:
-                            st.caption("Nada para agir agora com os filtros atuais.")
-                else:
-                    ux.info("Modo compacto ativo: desative para ver Rankings, Aging e Aja agora.")
-
-                # KPIs detalhados (opcional)
-                if show_details:
-                    with st.expander("KPIs detalhados", expanded=True):
-                        d1, d2, d3, d4 = rcols(4)
-                        with d1:
-                            st.metric("Total", formatar_numero_br(total_pedidos).split(",")[0])
-                        with d2:
-                            taxa_entrega = (pedidos_entregues / total_pedidos * 100) if total_pedidos > 0 else 0.0
-                            st.metric("✅ Entregues", formatar_numero_br(pedidos_entregues).split(",")[0], delta=f"{taxa_entrega:.1f}%".replace(".", ","))
-                        with d3:
-                            st.metric("🚨 Críticos", formatar_numero_br(pedidos_criticos).split(",")[0], delta_color="inverse" if pedidos_criticos > 0 else "normal")
-                        with d4:
-                            st.metric("Valor total", formatar_moeda_br(valor_total))
-
-    if tab2:
-        # Dashboard avançado
-        da.exibir_dashboard_avancado(df_view, formatar_moeda_br)
-    
-# ============================================
-# PÁGINA DE MAPA GEOGRÁFICO (NOVA VERSÃO)
-# ============================================
+        # Mini-card de resumo (responsiva)
+        status_pill = _status_pill(_to_str(r.get('status')))
+        cA, cB = st.columns([2, 1])
+        with cA:
+            st.markdown(
+                f"""**Resumo**  
+- **OC:** {_to_str(r.get('nr_oc'))} • **SOL:** {_to_str(r.get('nr_solicitacao'))}  
+- **Status:** {status_pill} • **Depto:** {_to_str(r.get('departamento'))}  
+- **Fornecedor:** {_to_str(r.get('fornecedor'))}  
+- **Descrição:** {_to_str(r.get('descricao'))[:220]}{'…' if len(_to_str(r.get('descricao'))) > 220 else ''}  
+"""
+            , unsafe_allow_html=True)
+        with cB:
+            st.markdown("**Ações**")
+            if st.button("Abrir na Gestão", use_container_width=True):
+                st.session_state["pedido_selecionado"] = _to_str(r.get("id") or "")
+                st.session_state["current_page"] = "orders_manage"
+                st.rerun()
+            if st.button("Ficha do Material", use_container_width=True):
+                st.session_state["pedido_selecionado"] = _to_str(r.get("id") or "")
+                st.session_state["current_page"] = "material_sheet"
+                st.rerun()
+            if st.button("Copiar OC/SOL", use_container_width=True):
+                st.code(f"OC: {_to_str(r.get('nr_oc'))} | SOL: {_to_str(r.get('nr_solicitacao'))}")
